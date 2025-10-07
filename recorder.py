@@ -52,6 +52,8 @@ CREATE TABLE IF NOT EXISTS daily_digests (
 )
 """)
 cur.execute("PRAGMA journal_mode=WAL;")
+cur.execute("PRAGMA busy_timeout=5000;")
+cur.execute("PRAGMA synchronous=NORMAL;")
 conn.commit()
 
 # --- ASR model (local) ---
@@ -114,8 +116,12 @@ stop_flag = threading.Event()
 proc_q = queue.Queue()
 
 def process_worker():
-    local_conn = sqlite3.connect(DB_PATH)
+    local_conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    print(f"[db] worker connected to {DB_PATH} (thread={threading.get_ident()})")
     local_cur = local_conn.cursor()
+    local_cur.execute("PRAGMA journal_mode=WAL;")
+    local_cur.execute("PRAGMA busy_timeout=5000;")
+    local_cur.execute("PRAGMA synchronous=NORMAL;")
     while not stop_flag.is_set():
         try:
             item = proc_q.get(timeout=0.5)
@@ -133,11 +139,24 @@ def process_worker():
                 print("[asr] transcript:", preview)
             summary = llm_summarize(txt) if USE_LLM else simple_summarize(txt)
             keywords = ",".join(extract_keywords(txt))
-            local_cur.execute(
-                "INSERT INTO segments(start_ts,end_ts,duration_sec,audio_path,transcript,summary,keywords) VALUES (?,?,?,?,?,?,?)",
-                (seg_start_ts_iso, seg_end_ts_iso, duration, wav_path, txt, summary, keywords)
-            )
-            local_conn.commit()
+            import sqlite3 as _sqlite3
+            attempts = 0
+            while True:
+                try:
+                    local_cur.execute(
+                        "INSERT INTO segments(start_ts,end_ts,duration_sec,audio_path,transcript,summary,keywords) VALUES (?,?,?,?,?,?,?)",
+                        (seg_start_ts_iso, seg_end_ts_iso, duration, wav_path, txt, summary, keywords)
+                    )
+                    local_conn.commit()
+                    break
+                except _sqlite3.OperationalError as e:
+                    if "locked" in str(e).lower() and attempts < 5:
+                        attempts += 1
+                        backoff = 0.1 * (2 ** attempts)
+                        print(f"[db] locked; retrying in {backoff:.2f}s (attempt {attempts})")
+                        time.sleep(backoff)
+                        continue
+                    raise
         except Exception as e:
             print("[proc] error:", e)
         finally:
