@@ -1,15 +1,28 @@
-import os, queue, sys, time, wave, json, datetime, sqlite3, threading
+import os, queue, sys, time, wave, json, datetime, sqlite3, threading, argparse
 import numpy as np
 import sounddevice as sd
 import webrtcvad
 
-# Optional imports (guarded)
-USE_LLM = False
+# --- Optional local LLM setup ---
+# Automatically enable if model exists or USE_LLM env var = 1/true
+USE_LLM = os.getenv("USE_LLM", "1").lower() in ("1", "true", "yes", "on")
+LLM_MODEL_PATH = os.path.expanduser(os.getenv("LLM_MODEL_PATH", "~/models/llama-3-8b-instruct.Q4_K_M.gguf"))
+LLM_N_CTX = int(os.getenv("LLM_N_CTX", "4096"))
+LLM_N_THREADS = int(os.getenv("LLM_N_THREADS", "8"))
+
+llm = None
 try:
-    from llama_cpp import Llama  # requires GGUF model file
-    USE_LLM = False  # set True after you configure your model path below
-except Exception:
-    pass
+    from llama_cpp import Llama  # pip install llama-cpp-python
+    if USE_LLM and os.path.exists(LLM_MODEL_PATH):
+        llm = Llama(model_path=LLM_MODEL_PATH, n_ctx=LLM_N_CTX, n_threads=LLM_N_THREADS)
+        print(f"[llm] Loaded local model: {LLM_MODEL_PATH}")
+    else:
+        USE_LLM = False
+        print(f"[llm] Model not found or disabled; using fallback summarizer.")
+except Exception as e:
+    USE_LLM = False
+    llm = None
+    print(f"[llm] Failed to initialize llama.cpp: {e}")
 
 # ASR
 from faster_whisper import WhisperModel
@@ -28,33 +41,79 @@ MAX_SEGMENT_SEC = int(os.getenv("MAX_SEGMENT_SEC", "60"))  # fixed length segmen
 
 os.makedirs(AUDIO_DIR, exist_ok=True)
 
-# --- DB setup ---
-conn = sqlite3.connect(DB_PATH)
+# --- DB setup (refactored) ---
+# Best practices:
+#  - one helper to create connections with consistent PRAGMAs
+#  - central schema initialization (idempotent)
+#  - useful indexes
+#  - write-ahead logging enabled for concurrent readers
+#  - modest busy timeout + NORMAL sync for perf
+
+def get_db_connection(check_same_thread=False):
+    conn = sqlite3.connect(DB_PATH, check_same_thread=check_same_thread)
+    cur = conn.cursor()
+    # Pragmas tuned for local app with WAL
+    cur.execute("PRAGMA journal_mode=WAL;")
+    cur.execute("PRAGMA busy_timeout=5000;")
+    cur.execute("PRAGMA synchronous=NORMAL;")
+    return conn
+
+
+def init_schema(conn):
+    cur = conn.cursor()
+    # Primary table of segments
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS segments (
+          id INTEGER PRIMARY KEY,
+          start_ts TEXT,
+          end_ts TEXT,
+          duration_sec REAL,
+          audio_path TEXT,
+          transcript TEXT,
+          summary TEXT,
+          keywords TEXT,
+          important INTEGER DEFAULT 0
+        )
+        """
+    )
+
+    # Daily digests (currently unused by the pipeline but kept for compatibility)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS daily_digests (
+          id INTEGER PRIMARY KEY,
+          date TEXT UNIQUE,
+          summary TEXT
+        )
+        """
+    )
+
+    # NEW: Hourly digests written by the hourly worker
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS hourly_digests (
+          id INTEGER PRIMARY KEY,
+          hour_start TEXT UNIQUE,  -- e.g., 2025-10-07T12:00:00
+          hour_end   TEXT,
+          summary    TEXT,
+          created_at TEXT DEFAULT (datetime('now'))
+        )
+        """
+    )
+
+    # Useful indexes for range queries & filtering
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_segments_start ON segments(start_ts);")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_segments_end   ON segments(end_ts);")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_segments_imp   ON segments(important);")
+
+    conn.commit()
+
+
+# Create a shared main-thread connection and initialize schema
+conn = get_db_connection(check_same_thread=False)
+init_schema(conn)
 cur = conn.cursor()
-cur.execute("""
-CREATE TABLE IF NOT EXISTS segments (
-  id INTEGER PRIMARY KEY,
-  start_ts TEXT,
-  end_ts TEXT,
-  duration_sec REAL,
-  audio_path TEXT,
-  transcript TEXT,
-  summary TEXT,
-  keywords TEXT,
-  important INTEGER DEFAULT 0
-)
-""")
-cur.execute("""
-CREATE TABLE IF NOT EXISTS daily_digests (
-  id INTEGER PRIMARY KEY,
-  date TEXT UNIQUE,
-  summary TEXT
-)
-""")
-cur.execute("PRAGMA journal_mode=WAL;")
-cur.execute("PRAGMA busy_timeout=5000;")
-cur.execute("PRAGMA synchronous=NORMAL;")
-conn.commit()
 
 # --- ASR model (local) ---
 asr_model = WhisperModel(MODEL_SIZE, device="auto", compute_type="int8")  # CPU-friendly
@@ -96,6 +155,53 @@ Transcript:
     out = llm(prompt, max_tokens=512, temperature=0.1, stop=["</s>"])
     return out["choices"][0]["text"].strip()
 
+# --- Hourly summarization helpers ---
+
+def _hour_floor(iso_ts: str) -> datetime.datetime:
+    t = datetime.datetime.fromisoformat(iso_ts)
+    return t.replace(minute=0, second=0, microsecond=0)
+
+
+def _fetch_texts_for_hour(db_conn: sqlite3.Connection, hour_start: datetime.datetime):
+    """Return list of text snippets for [hour_start, hour_start+1h). Prefers transcript, falls back to segment summary.
+    Lightly filters noise (short texts)."""
+    hour_end = hour_start + datetime.timedelta(hours=1)
+    c = db_conn.cursor()
+    rows = c.execute(
+        """
+        SELECT COALESCE(NULLIF(transcript,''), NULLIF(summary,'')) AS txt
+        FROM segments
+        WHERE start_ts >= ? AND start_ts < ?
+        ORDER BY start_ts ASC
+        """,
+        (hour_start.isoformat(), hour_end.isoformat()),
+    ).fetchall()
+    texts = [ (r[0] or "").strip() for r in rows ]
+    texts = [t for t in texts if len(t) >= 10]
+    return texts, hour_end
+
+
+def _compose_hour_summary(text: str) -> str:
+    """Summarize one hour of combined text using LLM if enabled; fallback otherwise."""
+    return llm_summarize(text) if USE_LLM else simple_summarize(text)
+
+
+def _upsert_hourly(db_conn: sqlite3.Connection, hour_start: datetime.datetime, hour_end: datetime.datetime, combined_text: str) -> str:
+    summary = _compose_hour_summary(combined_text)
+    c = db_conn.cursor()
+    c.execute(
+        """
+        INSERT INTO hourly_digests(hour_start, hour_end, summary)
+        VALUES (?, ?, ?)
+        ON CONFLICT(hour_start) DO UPDATE SET
+          hour_end=excluded.hour_end,
+          summary=excluded.summary
+        """,
+        (hour_start.isoformat(), hour_end.isoformat(), summary),
+    )
+    db_conn.commit()
+    return summary
+
 # --- Keyword extraction (YAKE fallback) ---
 try:
     import yake
@@ -116,12 +222,9 @@ stop_flag = threading.Event()
 proc_q = queue.Queue()
 
 def process_worker():
-    local_conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    local_conn = get_db_connection(check_same_thread=False)
     print(f"[db] worker connected to {DB_PATH} (thread={threading.get_ident()})")
     local_cur = local_conn.cursor()
-    local_cur.execute("PRAGMA journal_mode=WAL;")
-    local_cur.execute("PRAGMA busy_timeout=5000;")
-    local_cur.execute("PRAGMA synchronous=NORMAL;")
     while not stop_flag.is_set():
         try:
             item = proc_q.get(timeout=0.5)
@@ -162,6 +265,44 @@ def process_worker():
         finally:
             proc_q.task_done()
     local_conn.close()
+
+
+# --- Hourly worker thread ---
+def hourly_worker():
+    """Background worker that summarizes the last few *completed* hours into hourly_digests."""
+    local_conn = get_db_connection(check_same_thread=False)
+    local_cur = local_conn.cursor()
+    try:
+        while not stop_flag.is_set():
+            # Align to current hour and look back a small window to catch up
+            now_aligned = datetime.datetime.now().replace(minute=0, second=0, microsecond=0)
+            # Oldest first: check the last 6 completed hours
+            for i in range(6, 0, -1):
+                h0 = now_aligned - datetime.timedelta(hours=i)
+                # Skip if we already summarized this hour
+                exists = local_cur.execute(
+                    "SELECT 1 FROM hourly_digests WHERE hour_start = ?",
+                    (h0.isoformat(),),
+                ).fetchone()
+                if exists:
+                    continue
+                texts, h1 = _fetch_texts_for_hour(local_conn, h0)
+                if not texts:
+                    # Upsert empty summary so we don't revisit indefinitely
+                    _upsert_hourly(local_conn, h0, h1, "")
+                    print(f"[hourly] {h0:%Y-%m-%d %H}: no content")
+                else:
+                    combined = "\n".join(texts)
+                    summary = _upsert_hourly(local_conn, h0, h1, combined)
+                    preview = (summary[:140] + "…") if len(summary) > 140 else summary
+                    print(f"[hourly] {h0:%Y-%m-%d %H} summary → {preview}")
+            # Sleep ~5 minutes, but wake quickly if stopping
+            for _ in range(60):
+                if stop_flag.is_set():
+                    break
+                time.sleep(5)
+    finally:
+        local_conn.close()
 
 def audio_callback(indata, frames, time_info, status):
     if status:  # overflow/underflow info
@@ -246,23 +387,45 @@ def segmenter_loop():
         flush_segment()
 
 def main():
+    parser = argparse.ArgumentParser(description="Audio journal recorder with hourly summaries")
+    parser.add_argument("--only-hourly", action="store_true", help="Run only the hourly summarization worker (no audio capture/ASR)")
+    args = parser.parse_args()
+
+    if args.only_hourly:
+        print("Hourly-only mode. Ctrl+C to stop.")
+        try:
+            hourly_worker()  # runs in foreground loop; Ctrl+C to exit
+        except KeyboardInterrupt:
+            print("Stopping hourly-only mode…")
+            stop_flag.set()
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        return
+
+    # Default: run full pipeline
     print("Starting forever-listen. Ctrl+C to stop.")
     print(f"[config] SAMPLE_RATE={SAMPLE_RATE}, FRAME_MS={FRAME_MS}, OFF_TIME_SEC={OFF_TIME_SEC}, MAX_SEGMENT_SEC={MAX_SEGMENT_SEC}, VAD_AGGRESSIVENESS={VAD_AGGRESSIVENESS}")
     t_rec = threading.Thread(target=record_loop, daemon=True)
     t_seg = threading.Thread(target=segmenter_loop, daemon=True)
     t_proc = threading.Thread(target=process_worker, daemon=True)
+    t_hourly = threading.Thread(target=hourly_worker, daemon=True)
     t_rec.start()
     t_seg.start()
     t_proc.start()
+    t_hourly.start()
     try:
         while True:
             time.sleep(0.5)
     except KeyboardInterrupt:
-        print("Stopping...")
+        print("Stopping…")
         stop_flag.set()
         t_rec.join(timeout=2)
         t_seg.join(timeout=2)
         t_proc.join(timeout=2)
+        t_hourly.join(timeout=2)
         conn.close()
 
 if __name__ == "__main__":
