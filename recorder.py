@@ -1,7 +1,14 @@
-import os, queue, sys, time, wave, json, datetime, sqlite3, threading, argparse
+import os, queue, sys, time, wave, json, datetime, sqlite3, threading, argparse, socket
 import numpy as np
 import sounddevice as sd
 import webrtcvad
+
+# --- Flask UI imports (simple web UI) ---
+try:
+    from flask import Flask, jsonify, request, render_template_string
+except Exception:
+    Flask = None
+    print("[flask] Flask not available. Install with: pip install flask", file=sys.stderr)
 
 # --- Optional local LLM setup ---
 # Automatically enable if model exists or USE_LLM env var = 1/true
@@ -42,26 +49,16 @@ MAX_SEGMENT_SEC = int(os.getenv("MAX_SEGMENT_SEC", "60"))  # fixed length segmen
 os.makedirs(AUDIO_DIR, exist_ok=True)
 
 # --- DB setup (refactored) ---
-# Best practices:
-#  - one helper to create connections with consistent PRAGMAs
-#  - central schema initialization (idempotent)
-#  - useful indexes
-#  - write-ahead logging enabled for concurrent readers
-#  - modest busy timeout + NORMAL sync for perf
-
 def get_db_connection(check_same_thread=False):
     conn = sqlite3.connect(DB_PATH, check_same_thread=check_same_thread)
     cur = conn.cursor()
-    # Pragmas tuned for local app with WAL
     cur.execute("PRAGMA journal_mode=WAL;")
     cur.execute("PRAGMA busy_timeout=5000;")
     cur.execute("PRAGMA synchronous=NORMAL;")
     return conn
 
-
 def init_schema(conn):
     cur = conn.cursor()
-    # Primary table of segments
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS segments (
@@ -77,8 +74,6 @@ def init_schema(conn):
         )
         """
     )
-
-    # Daily digests (currently unused by the pipeline but kept for compatibility)
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS daily_digests (
@@ -88,29 +83,22 @@ def init_schema(conn):
         )
         """
     )
-
-    # NEW: Hourly digests written by the hourly worker
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS hourly_digests (
           id INTEGER PRIMARY KEY,
-          hour_start TEXT UNIQUE,  -- e.g., 2025-10-07T12:00:00
+          hour_start TEXT UNIQUE,
           hour_end   TEXT,
           summary    TEXT,
           created_at TEXT DEFAULT (datetime('now'))
         )
         """
     )
-
-    # Useful indexes for range queries & filtering
     cur.execute("CREATE INDEX IF NOT EXISTS idx_segments_start ON segments(start_ts);")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_segments_end   ON segments(end_ts);")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_segments_imp   ON segments(important);")
-
     conn.commit()
 
-
-# Create a shared main-thread connection and initialize schema
 conn = get_db_connection(check_same_thread=False)
 init_schema(conn)
 cur = conn.cursor()
@@ -118,32 +106,32 @@ cur = conn.cursor()
 # --- ASR model (local) ---
 asr_model = WhisperModel(MODEL_SIZE, device="auto", compute_type="int8")  # CPU-friendly
 
-# --- Optional local LLM ---
-llm = None
-LLM_MODEL_PATH = os.path.expanduser("~/models/llama-3-8b-instruct.Q4_K_M.gguf")
-if USE_LLM and os.path.exists(LLM_MODEL_PATH):
-    llm = Llama(model_path=LLM_MODEL_PATH, n_ctx=4096, n_threads=8)
+# --- Optional local LLM (ensure llm is defined if USE_LLM toggled above) ---
+if USE_LLM and llm is None and os.path.exists(LLM_MODEL_PATH):
+    try:
+        llm = Llama(model_path=LLM_MODEL_PATH, n_ctx=4096, n_threads=8)
+    except Exception:
+        llm = None
+        USE_LLM = False
 
 # --- Simple extractive summarizer (fallback) ---
 def simple_summarize(text, max_sentences=4):
-    # ultra-light extractive: pick diverse top sentences by length & basic scoring
     sents = [s.strip() for s in text.replace("\n"," ").split(".") if s.strip()]
     if not sents:
         return ""
-    scores = [(len(s), i, s) for i,s in enumerate(sents)]  # length proxy
-    scores.sort(reverse=True)  # longest first
+    scores = [(len(s), i, s) for i,s in enumerate(sents)]
+    scores.sort(reverse=True)
     chosen = []
-    used_idxs = set()
     for _, i, s in scores:
         if len(chosen) >= max_sentences: break
-        # avoid near-duplicates
-        if any(s.lower()[:40] in c.lower() or c.lower()[:40] in s.lower() for c in chosen): 
+        if any(s.lower()[:40] in c.lower() or c.lower()[:40] in s.lower() for c in chosen):
             continue
         chosen.append(s)
-        used_idxs.add(i)
-    return ". ".join(chosen) + "."
+    return ". ".join(chosen) + ("." if chosen else "")
 
 def llm_summarize(text):
+    if not text.strip():
+        return ""
     if not llm:
         return simple_summarize(text)
     prompt = f"""You are a meticulous note-taker.
@@ -156,15 +144,11 @@ Transcript:
     return out["choices"][0]["text"].strip()
 
 # --- Hourly summarization helpers ---
-
 def _hour_floor(iso_ts: str) -> datetime.datetime:
     t = datetime.datetime.fromisoformat(iso_ts)
     return t.replace(minute=0, second=0, microsecond=0)
 
-
 def _fetch_texts_for_hour(db_conn: sqlite3.Connection, hour_start: datetime.datetime):
-    """Return list of text snippets for [hour_start, hour_start+1h). Prefers transcript, falls back to segment summary.
-    Lightly filters noise (short texts)."""
     hour_end = hour_start + datetime.timedelta(hours=1)
     c = db_conn.cursor()
     rows = c.execute(
@@ -176,15 +160,12 @@ def _fetch_texts_for_hour(db_conn: sqlite3.Connection, hour_start: datetime.date
         """,
         (hour_start.isoformat(), hour_end.isoformat()),
     ).fetchall()
-    texts = [ (r[0] or "").strip() for r in rows ]
+    texts = [(r[0] or "").strip() for r in rows]
     texts = [t for t in texts if len(t) >= 10]
     return texts, hour_end
 
-
 def _compose_hour_summary(text: str) -> str:
-    """Summarize one hour of combined text using LLM if enabled; fallback otherwise."""
     return llm_summarize(text) if USE_LLM else simple_summarize(text)
-
 
 def _upsert_hourly(db_conn: sqlite3.Connection, hour_start: datetime.datetime, hour_end: datetime.datetime, combined_text: str) -> str:
     summary = _compose_hour_summary(combined_text)
@@ -218,9 +199,344 @@ frame_len = int(SAMPLE_RATE * FRAME_MS / 1000)
 
 audio_q = queue.Queue()
 stop_flag = threading.Event()
-
 proc_q = queue.Queue()
 
+# --- Simple controller state for UI control ---
+_threads = {}
+_running_lock = threading.Lock()
+_running = False
+
+def is_running() -> bool:
+    with _running_lock:
+        return _running
+
+def _start_threads():
+    global _threads, _running
+    with _running_lock:
+        if _running:
+            return False
+        stop_flag.clear()
+        t_rec = threading.Thread(target=record_loop, daemon=True, name="recorder-audio")
+        t_seg = threading.Thread(target=segmenter_loop, daemon=True, name="recorder-segmenter")
+        t_proc = threading.Thread(target=process_worker, daemon=True, name="recorder-asr")
+        t_hourly = threading.Thread(target=hourly_worker, daemon=True, name="recorder-hourly")
+        for t in (t_rec, t_seg, t_proc, t_hourly):
+            t.start()
+        _threads = {"rec": t_rec, "seg": t_seg, "proc": t_proc, "hourly": t_hourly}
+        _running = True
+        return True
+
+def _stop_threads():
+    global _threads, _running
+    with _running_lock:
+        if not _running:
+            return False
+        stop_flag.set()
+        for key, t in list(_threads.items()):
+            try:
+                t.join(timeout=2.5)
+            except Exception:
+                pass
+        _threads = {}
+        _running = False
+        return True
+
+# --- Modern Flask HTML template ---
+_FLASK_INDEX = """<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Recorder</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #fafafa; color: #333; line-height: 1.5; }
+    .container { max-width: 1200px; margin: 0 auto; padding: 2rem 1rem; }
+    header { margin-bottom: 2rem; }
+    h1 { font-size: 1.5rem; font-weight: 600; margin-bottom: 0.5rem; }
+    .status { display: inline-flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: #666; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #ddd; }
+    .dot.on { background: #ef4444; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+    .controls { display: flex; gap: 0.5rem; margin: 1.5rem 0; }
+    button { padding: 0.5rem 1rem; border: 1px solid #ddd; border-radius: 6px; background: white; color: #333; font-size: 0.9rem; cursor: pointer; transition: all 0.15s; }
+    button:hover { border-color: #999; background: #f9f9f9; }
+    button:active { transform: scale(0.98); }
+    .btn-start { border-color: #10b981; color: #10b981; }
+    .btn-start:hover { background: #f0fdf4; border-color: #059669; }
+    .btn-stop { border-color: #ef4444; color: #ef4444; }
+    .btn-stop:hover { background: #fef2f2; border-color: #dc2626; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    .card { background: white; border: 1px solid #e5e5e5; border-radius: 8px; padding: 1.25rem; }
+    .card h2 { font-size: 1rem; font-weight: 600; margin-bottom: 1rem; }
+    .search { width: 100%; padding: 0.5rem; border: 1px solid #e5e5e5; border-radius: 6px; font-size: 0.9rem; margin-bottom: 0.75rem; }
+    .search:focus { outline: none; border-color: #999; }
+    .list { max-height: 500px; overflow-y: auto; }
+    .item { padding: 0.75rem; border-bottom: 1px solid #f5f5f5; cursor: pointer; }
+    .item:hover { background: #fafafa; }
+    .item:last-child { border-bottom: none; }
+    .time { font-size: 0.8rem; color: #999; }
+    .text { font-size: 0.9rem; margin-top: 0.25rem; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    .summary { background: #fafafa; padding: 1rem; border-radius: 6px; font-size: 0.9rem; white-space: pre-wrap; max-height: 500px; overflow-y: auto; line-height: 1.6; }
+    .empty { text-align: center; padding: 2rem; color: #999; font-size: 0.9rem; }
+    .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.4); z-index: 1000; align-items: center; justify-content: center; }
+    .modal.active { display: flex; }
+    .modal-content { background: white; padding: 1.5rem; border-radius: 8px; max-width: 600px; width: 90%; max-height: 80vh; overflow-y: auto; }
+    .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
+    .modal-close { background: none; border: none; font-size: 1.5rem; cursor: pointer; color: #999; }
+    @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
+    @media (prefers-color-scheme: dark) {
+      body { background: #111; color: #ddd; }
+      .card, button, .search, .modal-content { background: #1a1a1a; border-color: #333; color: #ddd; }
+      button:hover { background: #222; }
+      .item:hover { background: #222; }
+      .summary { background: #222; }
+      .dot { background: #444; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Recorder</h1>
+      <div class="status">
+        <div class="dot" id="dot"></div>
+        <span id="statusText">Loading...</span>
+      </div>
+    </header>
+
+    <div class="controls">
+      <button class="btn-start" id="startBtn">Start</button>
+      <button class="btn-stop" id="stopBtn">Stop</button>
+      <button id="refreshBtn">Refresh</button>
+      <button id="summaryBtn">Summary</button>
+      <button id="exportBtn">Export</button>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h2>Segments</h2>
+        <input type="text" class="search" id="searchBox" placeholder="Search...">
+        <div class="list" id="segmentList">
+          <div class="empty">No segments</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Summary</h2>
+        <div class="summary" id="summaryBox">Click Summary to generate</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal" id="segmentModal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Details</h2>
+        <button class="modal-close" onclick="closeModal()">×</button>
+      </div>
+      <div id="modalBody"></div>
+    </div>
+  </div>
+
+  <script>
+    let segments = [];
+    let searchTerm = '';
+
+    async function api(method, path) {
+      const res = await fetch(path, { method });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    }
+
+    async function updateStatus() {
+      try {
+        const data = await api('GET', '/api/health');
+        const dot = document.getElementById('dot');
+        const text = document.getElementById('statusText');
+        if (data.running) {
+          dot.classList.add('on');
+          text.textContent = 'Recording';
+        } else {
+          dot.classList.remove('on');
+          text.textContent = 'Idle';
+        }
+      } catch (e) {
+        document.getElementById('statusText').textContent = 'Error';
+      }
+    }
+
+    async function loadSegments() {
+      try {
+        const data = await api('GET', '/api/segments');
+        segments = data.segments || [];
+        renderSegments();
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    function renderSegments() {
+      const list = document.getElementById('segmentList');
+      const filtered = segments.filter(s => 
+        !searchTerm || (s.transcript && s.transcript.toLowerCase().includes(searchTerm.toLowerCase()))
+      );
+      
+      if (filtered.length === 0) {
+        list.innerHTML = '<div class="empty">No segments</div>';
+        return;
+      }
+
+      list.innerHTML = filtered.map(s => `
+        <div class="item" onclick="showSegment(${s.id})">
+          <div class="time">${formatTime(s.start_ts)} • ${s.duration_sec.toFixed(1)}s</div>
+          <div class="text">${s.transcript || '...'}</div>
+        </div>
+      `).join('');
+    }
+
+    function formatTime(iso) {
+      const d = new Date(iso);
+      return d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    }
+
+    function showSegment(id) {
+      const seg = segments.find(s => s.id === id);
+      if (!seg) return;
+      const modal = document.getElementById('segmentModal');
+      const body = document.getElementById('modalBody');
+      body.innerHTML = `
+        <p><strong>Time:</strong> ${new Date(seg.start_ts).toLocaleString()}</p>
+        <p><strong>Duration:</strong> ${seg.duration_sec.toFixed(1)}s</p>
+        <p style="margin-top:1rem"><strong>Transcript:</strong></p>
+        <div class="summary">${seg.transcript || '(no transcript)'}</div>
+        ${seg.summary ? `<p style="margin-top:1rem"><strong>Summary:</strong></p><div class="summary">${seg.summary}</div>` : ''}
+        ${seg.keywords ? `<p style="margin-top:1rem"><strong>Keywords:</strong> ${seg.keywords}</p>` : ''}
+      `;
+      modal.classList.add('active');
+    }
+
+    function closeModal() {
+      document.getElementById('segmentModal').classList.remove('active');
+    }
+
+    async function generateSummary() {
+      const box = document.getElementById('summaryBox');
+      box.textContent = 'Generating...';
+      try {
+        const data = await api('GET', '/api/summary');
+        box.textContent = data.summary || '(no data)';
+      } catch (e) {
+        box.textContent = 'Error: ' + e.message;
+      }
+    }
+
+    async function exportData() {
+      try {
+        const data = await api('GET', '/api/segments');
+        const blob = new Blob([JSON.stringify(data.segments, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `recorder-${new Date().toISOString().split('T')[0]}.json`;
+        a.click();
+      } catch (e) {
+        alert('Export failed');
+      }
+    }
+
+    document.getElementById('startBtn').onclick = async () => { await api('POST', '/api/start'); await updateStatus(); };
+    document.getElementById('stopBtn').onclick = async () => { await api('POST', '/api/stop'); await updateStatus(); };
+    document.getElementById('refreshBtn').onclick = () => { loadSegments(); updateStatus(); };
+    document.getElementById('summaryBtn').onclick = generateSummary;
+    document.getElementById('exportBtn').onclick = exportData;
+    document.getElementById('searchBox').oninput = (e) => { searchTerm = e.target.value; renderSegments(); };
+    document.getElementById('segmentModal').onclick = (e) => { if (e.target.id === 'segmentModal') closeModal(); };
+
+    updateStatus();
+    loadSegments();
+    setInterval(updateStatus, 3000);
+    setInterval(loadSegments, 5000);
+  </script>
+</body>
+</html>"""
+
+# --- Flask app factory ---
+def create_flask_app(host: str = "127.0.0.1", port: int = 5000) -> "Flask":
+    if Flask is None:
+        raise RuntimeError("Flask is not installed. Run: pip install flask")
+    app = Flask(__name__)
+
+    @app.get("/")
+    def index():
+        return render_template_string(_FLASK_INDEX)
+
+    @app.get("/api/health")
+    def api_health():
+        return jsonify({"ok": True, "running": is_running()})
+
+    @app.post("/api/start")
+    def api_start():
+        started = _start_threads()
+        return jsonify({"ok": True, "running": is_running(), "started": bool(started)})
+
+    @app.post("/api/stop")
+    def api_stop():
+        stopped = _stop_threads()
+        return jsonify({"ok": True, "running": is_running(), "stopped": bool(stopped)})
+
+    @app.get("/api/segments")
+    def api_segments():
+        try:
+            c = conn.cursor()
+            rows = c.execute(
+                """
+                SELECT id, start_ts, end_ts, duration_sec, audio_path, transcript, summary, keywords, important
+                FROM segments
+                ORDER BY start_ts DESC
+                """
+            ).fetchall()
+            segments = []
+            for r in rows:
+                segments.append({
+                    "id": r[0],
+                    "start_ts": r[1],
+                    "end_ts": r[2],
+                    "duration_sec": r[3] or 0,
+                    "audio_path": r[4],
+                    "transcript": r[5] or "",
+                    "summary": r[6] or "",
+                    "keywords": r[7] or "",
+                    "important": r[8] or 0
+                })
+            return jsonify({"ok": True, "segments": segments})
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+    @app.get("/api/summary")
+    def api_summary():
+        # Summarize all transcripts
+        try:
+            c = conn.cursor()
+            rows = c.execute(
+                """
+                SELECT COALESCE(NULLIF(transcript,''), NULLIF(summary,'')) AS txt
+                FROM segments
+                ORDER BY start_ts ASC
+                """
+            ).fetchall()
+            texts = [(r[0] or "").strip() for r in rows if (r and r[0])]
+            combined = "\n".join(texts)
+            summary = _compose_hour_summary(combined) if combined else "(no transcripts yet)"
+            return jsonify({"ok": True, "summary": summary, "count": len(texts)})
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+    app.config["HOST"] = host
+    app.config["PORT"] = int(port)
+    return app
+
+# ----------------- workers -----------------
 def process_worker():
     local_conn = get_db_connection(check_same_thread=False)
     print(f"[db] worker connected to {DB_PATH} (thread={threading.get_ident()})")
@@ -266,20 +582,14 @@ def process_worker():
             proc_q.task_done()
     local_conn.close()
 
-
-# --- Hourly worker thread ---
 def hourly_worker():
-    """Background worker that summarizes the last few *completed* hours into hourly_digests."""
     local_conn = get_db_connection(check_same_thread=False)
     local_cur = local_conn.cursor()
     try:
         while not stop_flag.is_set():
-            # Align to current hour and look back a small window to catch up
             now_aligned = datetime.datetime.now().replace(minute=0, second=0, microsecond=0)
-            # Oldest first: check the last 6 completed hours
             for i in range(6, 0, -1):
                 h0 = now_aligned - datetime.timedelta(hours=i)
-                # Skip if we already summarized this hour
                 exists = local_cur.execute(
                     "SELECT 1 FROM hourly_digests WHERE hour_start = ?",
                     (h0.isoformat(),),
@@ -288,7 +598,6 @@ def hourly_worker():
                     continue
                 texts, h1 = _fetch_texts_for_hour(local_conn, h0)
                 if not texts:
-                    # Upsert empty summary so we don't revisit indefinitely
                     _upsert_hourly(local_conn, h0, h1, "")
                     print(f"[hourly] {h0:%Y-%m-%d %H}: no content")
                 else:
@@ -296,7 +605,6 @@ def hourly_worker():
                     summary = _upsert_hourly(local_conn, h0, h1, combined)
                     preview = (summary[:140] + "…") if len(summary) > 140 else summary
                     print(f"[hourly] {h0:%Y-%m-%d %H} summary → {preview}")
-            # Sleep ~5 minutes, but wake quickly if stopping
             for _ in range(60):
                 if stop_flag.is_set():
                     break
@@ -305,7 +613,7 @@ def hourly_worker():
         local_conn.close()
 
 def audio_callback(indata, frames, time_info, status):
-    if status:  # overflow/underflow info
+    if status:
         pass
     audio_q.put(bytes(indata))
 
@@ -325,7 +633,6 @@ def segmenter_loop():
     def flush_segment():
         nonlocal buffer, active, seg_start_ts, seg_end_ts
         if not buffer:
-            # even if no speech, roll the window forward
             seg_start_ts = datetime.datetime.now()
             return
         ts_str = seg_start_ts.isoformat(timespec="seconds").replace(":","-")
@@ -352,8 +659,7 @@ def segmenter_loop():
         if not seg_end_ts:
             seg_end_ts = seg_start_ts
         if chunk is not None:
-            # split into FRAME_MS frames
-            for i in range(0, len(chunk), frame_len*2):  # *2 bytes per int16
+            for i in range(0, len(chunk), frame_len*2):
                 frame = chunk[i:i+frame_len*2]
                 if len(frame) < frame_len*2:
                     continue
@@ -366,10 +672,8 @@ def segmenter_loop():
                     active = True
                     seg_end_ts = datetime.datetime.now()
                 else:
-                    # pad a tiny bit to keep natural pauses
                     pass
 
-        # Fixed-length rollover: if the current segment window reached MAX_SEGMENT_SEC, flush regardless of silence
         window_elapsed = (datetime.datetime.now() - seg_start_ts).total_seconds()
         if window_elapsed >= MAX_SEGMENT_SEC:
             print(f"[rollover] {window_elapsed:.1f}s ≥ {MAX_SEGMENT_SEC}s — rolling segment…")
@@ -380,21 +684,24 @@ def segmenter_loop():
             flush_segment()
             seg_start_ts = datetime.datetime.now()
 
-    # flush on exit
     if buffer:
         print("[segment] flushing final segment...")
         seg_start_ts = datetime.datetime.now()
         flush_segment()
 
+# ----------------- entrypoint -----------------
 def main():
     parser = argparse.ArgumentParser(description="Audio journal recorder with hourly summaries")
     parser.add_argument("--only-hourly", action="store_true", help="Run only the hourly summarization worker (no audio capture/ASR)")
+    parser.add_argument("--flask-ui", action="store_true", help="Run a simple Flask UI instead of auto-starting the recorder")
+    parser.add_argument("--ui-host", default=os.getenv("RECORDER_UI_HOST", "127.0.0.1"), help="Flask UI host (default 127.0.0.1)")
+    parser.add_argument("--ui-port", default=int(os.getenv("RECORDER_UI_PORT", "5000")), type=int, help="Flask UI port (default 5000)")
     args = parser.parse_args()
 
     if args.only_hourly:
         print("Hourly-only mode. Ctrl+C to stop.")
         try:
-            hourly_worker()  # runs in foreground loop; Ctrl+C to exit
+            hourly_worker()
         except KeyboardInterrupt:
             print("Stopping hourly-only mode…")
             stop_flag.set()
@@ -405,27 +712,36 @@ def main():
                 pass
         return
 
-    # Default: run full pipeline
+    if args.flask_ui:
+        if Flask is None:
+            print("Flask is not installed. Run: pip install flask", file=sys.stderr)
+            return
+        app = create_flask_app(host=args.ui_host, port=args.ui_port)
+        host = app.config["HOST"]
+        port = app.config["PORT"]
+        # Find a free port if the requested one is busy.
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            if sock.connect_ex((host, port)) == 0:
+                print(f"[flask] Port {port} in use, trying {port+1}", file=sys.stderr)
+                port += 1
+        finally:
+            sock.close()
+        print(f"Open http://{host}:{port} in your browser.")
+        # Do not auto-start recorder here; use the UI buttons.
+        app.run(host=host, port=port, debug=False)
+        return
+
+    # Default: start recorder immediately (no UI)
     print("Starting forever-listen. Ctrl+C to stop.")
     print(f"[config] SAMPLE_RATE={SAMPLE_RATE}, FRAME_MS={FRAME_MS}, OFF_TIME_SEC={OFF_TIME_SEC}, MAX_SEGMENT_SEC={MAX_SEGMENT_SEC}, VAD_AGGRESSIVENESS={VAD_AGGRESSIVENESS}")
-    t_rec = threading.Thread(target=record_loop, daemon=True)
-    t_seg = threading.Thread(target=segmenter_loop, daemon=True)
-    t_proc = threading.Thread(target=process_worker, daemon=True)
-    t_hourly = threading.Thread(target=hourly_worker, daemon=True)
-    t_rec.start()
-    t_seg.start()
-    t_proc.start()
-    t_hourly.start()
+    _start_threads()
     try:
         while True:
             time.sleep(0.5)
     except KeyboardInterrupt:
         print("Stopping…")
-        stop_flag.set()
-        t_rec.join(timeout=2)
-        t_seg.join(timeout=2)
-        t_proc.join(timeout=2)
-        t_hourly.join(timeout=2)
+        _stop_threads()
         conn.close()
 
 if __name__ == "__main__":
