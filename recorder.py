@@ -488,13 +488,17 @@ def create_flask_app(host: str = "127.0.0.1", port: int = 5000) -> "Flask":
     @app.get("/api/segments")
     def api_segments():
         try:
+            now = datetime.datetime.now()
+            start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
             c = conn.cursor()
             rows = c.execute(
                 """
                 SELECT id, start_ts, end_ts, duration_sec, audio_path, transcript, summary, keywords, important
                 FROM segments
+                WHERE start_ts >= ?
                 ORDER BY start_ts DESC
-                """
+                """,
+                (start_of_day.isoformat(),)
             ).fetchall()
             segments = []
             for r in rows:
@@ -515,19 +519,23 @@ def create_flask_app(host: str = "127.0.0.1", port: int = 5000) -> "Flask":
 
     @app.get("/api/summary")
     def api_summary():
-        # Summarize all transcripts
+        # Summarize today's transcripts only
         try:
+            now = datetime.datetime.now()
+            start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
             c = conn.cursor()
             rows = c.execute(
                 """
                 SELECT COALESCE(NULLIF(transcript,''), NULLIF(summary,'')) AS txt
                 FROM segments
+                WHERE start_ts >= ?
                 ORDER BY start_ts ASC
-                """
+                """,
+                (start_of_day.isoformat(),)
             ).fetchall()
             texts = [(r[0] or "").strip() for r in rows if (r and r[0])]
             combined = "\n".join(texts)
-            summary = _compose_hour_summary(combined) if combined else "(no transcripts yet)"
+            summary = _compose_hour_summary(combined) if combined else "(no transcripts today)"
             return jsonify({"ok": True, "summary": summary, "count": len(texts)})
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)}), 500
