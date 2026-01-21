@@ -180,14 +180,56 @@ def simple_summarize(text, max_sentences=4):
         chosen.append(s)
     return ". ".join(chosen) + ("." if chosen else "")
 
-def llm_summarize(text):
+def llm_summarize(text, is_daily=False):
     if not text.strip():
         return ""
     
-    prompt = """You are a meticulous note-taker. Summarize the following transcript into concise bullet points preserving chronological order. Include action items (who/what/when), decisions, and key takeaways. Keep it faithful to the text, no speculation.
+    if is_daily:
+        prompt = f"""Create comprehensive meeting notes from this day's voice recordings.
+
+The recordings are timestamped like [HH:MM AM/PM].
+
+Structure your notes as:
+
+## 📝 Detailed Notes
+Go through each recording chronologically and capture ALL important details:
+- What was discussed
+- Who said what (if identifiable)
+- Specific numbers, dates, names mentioned
+- Context and background information
+- Problems raised and solutions proposed
+- Questions asked and answers given
+
+Be thorough - don't skip anything important.
+
+## 📊 Summary
+1-2 paragraph overview of the day.
+
+## 🎯 Key Topics
+- Main subjects discussed (bullet points)
+
+## ✅ Decisions Made
+- Any decisions or conclusions reached
+
+## ⚡ Action Items
+- Person: Task (Due date if mentioned)
+
+## 💬 Notable Quotes
+- Important statements worth remembering
+
+## ❓ Open Questions
+- Unanswered questions that need follow-up
+
+---
+Recordings:
+{text}"""
+    else:
+        prompt = f"""Summarize this transcript concisely in 2-4 bullet points.
+Focus on: main topic, key points, any action items or decisions.
+Be brief and direct.
 
 Transcript:
-""" + text
+{text}"""
     
     # Try LiteLLM first
     if USE_LITELLM:
@@ -200,9 +242,9 @@ Transcript:
                     "model": LITELLM_MODEL_ID,
                     "messages": [{"role": "user", "content": prompt}],
                     "temperature": LITELLM_TEMPERATURE,
-                    "max_tokens": LITELLM_MAX_TOKENS
+                    "max_tokens": 8000 if is_daily else LITELLM_MAX_TOKENS
                 },
-                timeout=60
+                timeout=120
             )
             if resp.status_code == 200:
                 return resp.json()["choices"][0]["message"]["content"].strip()
@@ -585,7 +627,7 @@ def create_flask_app(host: str = "127.0.0.1", port: int = 5000) -> "Flask":
                     ts = datetime.datetime.fromisoformat(r[0]).strftime("%I:%M %p")
                     texts.append(f"[{ts}] {r[1].strip()}")
             combined = "\n\n".join(texts)
-            summary = _compose_hour_summary(combined) if combined else "(no transcripts today)"
+            summary = llm_summarize(combined, is_daily=True) if combined else "(no transcripts today)"
             return jsonify({"ok": True, "summary": summary, "count": len(texts)})
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)}), 500
