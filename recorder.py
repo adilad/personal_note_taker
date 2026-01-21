@@ -10,6 +10,33 @@ except Exception:
     Flask = None
     print("[flask] Flask not available. Install with: pip install flask", file=sys.stderr)
 
+# --- Optional noise reduction ---
+USE_NOISEREDUCE = os.getenv("USE_NOISEREDUCE", "1").lower() in ("1", "true", "yes", "on")
+nr = None
+try:
+    import noisereduce as nr
+    print("[nr] Noise reduction enabled")
+except ImportError:
+    USE_NOISEREDUCE = False
+    print("[nr] noisereduce not installed; skipping. Install with: pip install noisereduce")
+
+# --- Optional speaker diarization ---
+USE_DIARIZATION = os.getenv("USE_DIARIZATION", "0").lower() in ("1", "true", "yes", "on")
+diarization_pipeline = None
+if USE_DIARIZATION:
+    try:
+        from pyannote.audio import Pipeline
+        HF_TOKEN = os.getenv("HF_TOKEN", "")
+        if HF_TOKEN:
+            diarization_pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", use_auth_token=HF_TOKEN)
+            print("[diarization] Speaker diarization enabled")
+        else:
+            USE_DIARIZATION = False
+            print("[diarization] HF_TOKEN not set; diarization disabled. Get token from huggingface.co")
+    except ImportError:
+        USE_DIARIZATION = False
+        print("[diarization] pyannote-audio not installed. Install with: pip install pyannote-audio")
+
 # --- Optional local LLM setup ---
 # Automatically enable if model exists or USE_LLM env var = 1/true
 USE_LLM = os.getenv("USE_LLM", "1").lower() in ("1", "true", "yes", "on")
@@ -37,24 +64,26 @@ from faster_whisper import WhisperModel
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 AUDIO_DIR = os.path.join(APP_DIR, "audio")
 DB_PATH = os.path.join(APP_DIR, "journal.db")
-MODEL_SIZE = "small"  # "tiny","base","small","medium","large-v2" (download on first run)
-VAD_AGGRESSIVENESS = 2  # 0-3 (3=more aggressive)
+MODEL_SIZE = os.getenv("WHISPER_MODEL", "small")  # "tiny","base","small","medium","large-v2"
+BEAM_SIZE = int(os.getenv("WHISPER_BEAM_SIZE", "5"))  # higher = more accurate, slower
+VAD_AGGRESSIVENESS = int(os.getenv("VAD_AGGRESSIVENESS", "1"))  # 0-3 (lower=more sensitive, catches more speech)
 SAMPLE_RATE = 16000
 FRAME_MS = 30  # 10, 20, or 30 ms for webrtcvad
-OFF_TIME_SEC = 20  # silence to close segment
+OFF_TIME_SEC = 3  # silence to close segment (seconds)
 
-OFF_TIME_SEC = int(os.getenv("OFF_TIME_SEC", OFF_TIME_SEC))
-MAX_SEGMENT_SEC = int(os.getenv("MAX_SEGMENT_SEC", "60"))  # fixed length segments in seconds
+OFF_TIME_SEC = int(os.getenv("OFF_TIME_SEC", str(OFF_TIME_SEC)))
+MAX_SEGMENT_SEC = int(os.getenv("MAX_SEGMENT_SEC", "120"))  # max segment length (seconds)
 
 os.makedirs(AUDIO_DIR, exist_ok=True)
 
 # --- DB setup (refactored) ---
 def get_db_connection(check_same_thread=False):
-    conn = sqlite3.connect(DB_PATH, check_same_thread=check_same_thread)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=check_same_thread, timeout=30.0, isolation_level='DEFERRED')
     cur = conn.cursor()
     cur.execute("PRAGMA journal_mode=WAL;")
-    cur.execute("PRAGMA busy_timeout=5000;")
+    cur.execute("PRAGMA busy_timeout=30000;")
     cur.execute("PRAGMA synchronous=NORMAL;")
+    cur.execute("PRAGMA wal_autocheckpoint=1000;")
     return conn
 
 def init_schema(conn):
@@ -70,10 +99,16 @@ def init_schema(conn):
           transcript TEXT,
           summary TEXT,
           keywords TEXT,
-          important INTEGER DEFAULT 0
+          important INTEGER DEFAULT 0,
+          speakers TEXT
         )
         """
     )
+    # Migration: add speakers column if missing
+    cur.execute("PRAGMA table_info(segments)")
+    cols = [r[1] for r in cur.fetchall()]
+    if "speakers" not in cols:
+        cur.execute("ALTER TABLE segments ADD COLUMN speakers TEXT")
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS daily_digests (
@@ -201,6 +236,19 @@ audio_q = queue.Queue()
 stop_flag = threading.Event()
 proc_q = queue.Queue()
 
+# --- Live transcription state ---
+_live_transcript = ""
+_live_lock = threading.Lock()
+
+def set_live_transcript(text: str):
+    global _live_transcript
+    with _live_lock:
+        _live_transcript = text
+
+def get_live_transcript() -> str:
+    with _live_lock:
+        return _live_transcript
+
 # --- Simple controller state for UI control ---
 _threads = {}
 _running_lock = threading.Lock()
@@ -313,6 +361,11 @@ _FLASK_INDEX = """<!doctype html>
       <button id="exportBtn">Export</button>
     </div>
 
+    <div class="card live-card" id="liveCard" style="display:none; margin-bottom:1rem;">
+      <h2>🎤 Live</h2>
+      <div class="summary" id="liveBox" style="min-height:60px;"></div>
+    </div>
+
     <div class="grid">
       <div class="card">
         <h2>Segments</h2>
@@ -408,6 +461,7 @@ _FLASK_INDEX = """<!doctype html>
       body.innerHTML = `
         <p><strong>Time:</strong> ${new Date(seg.start_ts).toLocaleString()}</p>
         <p><strong>Duration:</strong> ${seg.duration_sec.toFixed(1)}s</p>
+        ${seg.speakers ? `<p style="margin-top:1rem"><strong>Speakers:</strong></p><div class="summary" style="white-space:pre-wrap">${seg.speakers}</div>` : ''}
         <p style="margin-top:1rem"><strong>Transcript:</strong></p>
         <div class="summary">${seg.transcript || '(no transcript)'}</div>
         ${seg.summary ? `<p style="margin-top:1rem"><strong>Summary:</strong></p><div class="summary">${seg.summary}</div>` : ''}
@@ -448,6 +502,21 @@ _FLASK_INDEX = """<!doctype html>
     document.getElementById('startBtn').onclick = async () => { await api('POST', '/api/start'); await updateStatus(); };
     document.getElementById('stopBtn').onclick = async () => { await api('POST', '/api/stop'); await updateStatus(); };
     document.getElementById('refreshBtn').onclick = () => { loadSegments(); updateStatus(); };
+
+    async function updateLive() {
+      try {
+        const data = await api('GET', '/api/live');
+        const card = document.getElementById('liveCard');
+        const box = document.getElementById('liveBox');
+        if (data.running) {
+          card.style.display = 'block';
+          box.textContent = data.transcript || '(listening...)';
+        } else {
+          card.style.display = 'none';
+        }
+      } catch (e) {}
+    }
+    setInterval(updateLive, 1000);
     document.getElementById('summaryBtn').onclick = generateSummary;
     document.getElementById('exportBtn').onclick = exportData;
     document.getElementById('searchBox').oninput = (e) => { searchTerm = e.target.value; renderSegments(); };
@@ -475,6 +544,10 @@ def create_flask_app(host: str = "127.0.0.1", port: int = 5000) -> "Flask":
     def api_health():
         return jsonify({"ok": True, "running": is_running()})
 
+    @app.get("/api/live")
+    def api_live():
+        return jsonify({"ok": True, "transcript": get_live_transcript(), "running": is_running()})
+
     @app.post("/api/start")
     def api_start():
         started = _start_threads()
@@ -490,16 +563,18 @@ def create_flask_app(host: str = "127.0.0.1", port: int = 5000) -> "Flask":
         try:
             now = datetime.datetime.now()
             start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
-            c = conn.cursor()
+            local_conn = get_db_connection()
+            c = local_conn.cursor()
             rows = c.execute(
                 """
-                SELECT id, start_ts, end_ts, duration_sec, audio_path, transcript, summary, keywords, important
+                SELECT id, start_ts, end_ts, duration_sec, audio_path, transcript, summary, keywords, important, speakers
                 FROM segments
                 WHERE start_ts >= ?
                 ORDER BY start_ts DESC
                 """,
                 (start_of_day.isoformat(),)
             ).fetchall()
+            local_conn.close()
             segments = []
             for r in rows:
                 segments.append({
@@ -511,7 +586,8 @@ def create_flask_app(host: str = "127.0.0.1", port: int = 5000) -> "Flask":
                     "transcript": r[5] or "",
                     "summary": r[6] or "",
                     "keywords": r[7] or "",
-                    "important": r[8] or 0
+                    "important": r[8] or 0,
+                    "speakers": r[9] or ""
                 })
             return jsonify({"ok": True, "segments": segments})
         except Exception as e:
@@ -523,7 +599,8 @@ def create_flask_app(host: str = "127.0.0.1", port: int = 5000) -> "Flask":
         try:
             now = datetime.datetime.now()
             start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
-            c = conn.cursor()
+            local_conn = get_db_connection()
+            c = local_conn.cursor()
             rows = c.execute(
                 """
                 SELECT COALESCE(NULLIF(transcript,''), NULLIF(summary,'')) AS txt
@@ -533,6 +610,7 @@ def create_flask_app(host: str = "127.0.0.1", port: int = 5000) -> "Flask":
                 """,
                 (start_of_day.isoformat(),)
             ).fetchall()
+            local_conn.close()
             texts = [(r[0] or "").strip() for r in rows if (r and r[0])]
             combined = "\n".join(texts)
             summary = _compose_hour_summary(combined) if combined else "(no transcripts today)"
@@ -545,6 +623,44 @@ def create_flask_app(host: str = "127.0.0.1", port: int = 5000) -> "Flask":
     return app
 
 # ----------------- workers -----------------
+def denoise_audio(wav_path: str) -> np.ndarray:
+    """Load audio and apply noise reduction if available."""
+    import scipy.io.wavfile as wavfile
+    sr, audio = wavfile.read(wav_path)
+    audio = audio.astype(np.float32) / 32768.0
+    if USE_NOISEREDUCE and nr:
+        print("[nr] applying noise reduction...")
+        audio = nr.reduce_noise(y=audio, sr=sr, prop_decrease=0.8)
+    return audio
+
+def diarize_audio(wav_path: str, transcript_segments) -> str:
+    """Run speaker diarization and merge with transcript."""
+    if not USE_DIARIZATION or not diarization_pipeline:
+        return ""
+    try:
+        print("[diarization] identifying speakers...")
+        diarization = diarization_pipeline(wav_path)
+        # Build speaker timeline
+        speaker_turns = []
+        for turn, _, speaker in diarization.itertracks(yield_label=True):
+            speaker_turns.append((turn.start, turn.end, speaker))
+        if not speaker_turns:
+            return ""
+        # Match transcript segments to speakers
+        result = []
+        for seg in transcript_segments:
+            seg_mid = (seg.start + seg.end) / 2
+            speaker = "?"
+            for start, end, spk in speaker_turns:
+                if start <= seg_mid <= end:
+                    speaker = spk
+                    break
+            result.append(f"[{speaker}] {seg.text.strip()}")
+        return "\n".join(result)
+    except Exception as e:
+        print(f"[diarization] error: {e}")
+        return ""
+
 def process_worker():
     local_conn = get_db_connection(check_same_thread=False)
     print(f"[db] worker connected to {DB_PATH} (thread={threading.get_ident()})")
@@ -557,8 +673,18 @@ def process_worker():
         try:
             wav_path, seg_start_ts_iso, seg_end_ts_iso, duration = item
             print("[asr] transcribing...", wav_path)
-            segments, _ = asr_model.transcribe(wav_path, beam_size=1, vad_filter=False, language="en")
-            txt = " ".join(s.text.strip() for s in segments).strip()
+            
+            # Denoise audio
+            audio = denoise_audio(wav_path)
+            
+            # Transcribe
+            segments_list, _ = asr_model.transcribe(audio, beam_size=BEAM_SIZE, vad_filter=False, language="en")
+            segments_list = list(segments_list)  # materialize generator
+            txt = " ".join(s.text.strip() for s in segments_list).strip()
+            
+            # Diarization
+            speakers_txt = diarize_audio(wav_path, segments_list)
+            
             if not txt:
                 print("[asr] transcription empty for", wav_path)
             else:
@@ -571,8 +697,8 @@ def process_worker():
             while True:
                 try:
                     local_cur.execute(
-                        "INSERT INTO segments(start_ts,end_ts,duration_sec,audio_path,transcript,summary,keywords) VALUES (?,?,?,?,?,?,?)",
-                        (seg_start_ts_iso, seg_end_ts_iso, duration, wav_path, txt, summary, keywords)
+                        "INSERT INTO segments(start_ts,end_ts,duration_sec,audio_path,transcript,summary,keywords,speakers) VALUES (?,?,?,?,?,?,?,?)",
+                        (seg_start_ts_iso, seg_end_ts_iso, duration, wav_path, txt, summary, keywords, speakers_txt)
                     )
                     local_conn.commit()
                     break
@@ -637,9 +763,11 @@ def segmenter_loop():
     last_voice_ts = time.time()
     seg_start_ts = datetime.datetime.now()
     seg_end_ts = seg_start_ts
+    last_live_transcribe = 0  # timestamp of last live transcription
 
     def flush_segment():
         nonlocal buffer, active, seg_start_ts, seg_end_ts
+        set_live_transcript("")  # clear live transcript on flush
         if not buffer:
             seg_start_ts = datetime.datetime.now()
             return
@@ -656,6 +784,22 @@ def segmenter_loop():
         buffer = bytes()
         active = False
         seg_start_ts = datetime.datetime.now()
+
+    def do_live_transcribe():
+        nonlocal last_live_transcribe
+        if not buffer or len(buffer) < SAMPLE_RATE * 2:  # need at least 1 sec
+            return
+        now = time.time()
+        if now - last_live_transcribe < 2:  # throttle to every 2 sec
+            return
+        last_live_transcribe = now
+        try:
+            audio_np = np.frombuffer(buffer, dtype=np.int16).astype(np.float32) / 32768.0
+            segs, _ = asr_model.transcribe(audio_np, beam_size=1, vad_filter=False, language="en")
+            txt = " ".join(s.text.strip() for s in segs).strip()
+            set_live_transcript(txt)
+        except Exception as e:
+            print(f"[live] transcribe error: {e}")
 
     while not stop_flag.is_set():
         try:
@@ -675,12 +819,16 @@ def segmenter_loop():
                 if is_speech:
                     if not active:
                         print("[vad] speech detected — recording segment…")
-                    buffer += frame
                     last_voice_ts = now
                     active = True
                     seg_end_ts = datetime.datetime.now()
-                else:
-                    pass
+                # Buffer ALL frames once active (keeps silence between words)
+                if active:
+                    buffer += frame
+
+        # Live transcription while recording
+        if active:
+            do_live_transcribe()
 
         window_elapsed = (datetime.datetime.now() - seg_start_ts).total_seconds()
         if window_elapsed >= MAX_SEGMENT_SEC:
