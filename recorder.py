@@ -886,10 +886,10 @@ def process_worker():
                     print(f"[ai] category: {analysis['category']}, sentiment: {analysis['sentiment']}")
             
             if not txt:
-                print("[asr] transcription empty for", wav_path)
-            else:
-                preview = (txt[:160] + "…") if len(txt) > 160 else txt
-                print("[asr] transcript:", preview)
+                print("[asr] transcription empty for", wav_path, "- skipping")
+                continue
+            preview = (txt[:160] + "…") if len(txt) > 160 else txt
+            print("[asr] transcript:", preview)
             summary = llm_summarize(txt)
             keywords = ",".join(extract_keywords(txt))
             import sqlite3 as _sqlite3
