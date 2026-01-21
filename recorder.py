@@ -456,6 +456,7 @@ _FLASK_INDEX = """<!doctype html>
     <div class="actions">
       <button class="btn" id="summaryBtn">Summary</button>
       <button class="btn" id="exportBtn">Export</button>
+      <button class="btn" id="reprocessBtn">Reprocess</button>
     </div>
     <div class="section">
       <div class="section-title collapsible" id="segToggle">Recordings <span id="segCount"></span></div>
@@ -518,6 +519,7 @@ async function live(){
 $('recBtn').onclick=async()=>{await api('POST',on?'/api/stop':'/api/start');sync();};
 $('summaryBtn').onclick=async()=>{$('summary').textContent='Generating...';$('summary').classList.remove('collapsed');$('sumToggle').classList.remove('collapsed');const d=await api('GET','/api/summary');$('summary').textContent=d.summary||'(no data)';};
 $('exportBtn').onclick=async()=>{const d=await api('GET','/api/segments');const b=new Blob([JSON.stringify(d.segments,null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=`voice-${new Date().toISOString().slice(0,10)}.json`;a.click();};
+$('reprocessBtn').onclick=async()=>{$('reprocessBtn').textContent='Processing...';const d=await api('POST','/api/reprocess');$('reprocessBtn').textContent=`Reprocess (${d.queued||0} queued)`;setTimeout(()=>{$('reprocessBtn').textContent='Reprocess';load();},3000);};
 $('search').oninput=e=>{q=e.target.value;render();};
 $('segments').onclick=e=>{const s=e.target.closest('.seg');if(s)show(s.dataset.id);};
 $('modal').onclick=e=>{if(e.target.id==='modal')$('modal').classList.remove('on');};
@@ -552,6 +554,37 @@ def create_flask_app(host: str = "127.0.0.1", port: int = 5000) -> "Flask":
     @app.get("/api/live")
     def api_live():
         return jsonify({"ok": True, "transcript": get_live_transcript(), "running": is_running()})
+
+    @app.post("/api/reprocess")
+    def api_reprocess():
+        """Find and queue unprocessed audio files."""
+        try:
+            local_conn = get_db_connection()
+            c = local_conn.cursor()
+            c.execute('SELECT audio_path FROM segments')
+            processed = set(r[0] for r in c.fetchall())
+            local_conn.close()
+            
+            queued = 0
+            for f in sorted(os.listdir(AUDIO_DIR)):  # Sort to process in order
+                if f.endswith('.wav'):
+                    path = os.path.join(AUDIO_DIR, f)
+                    if path not in processed and os.path.abspath(path) not in processed:
+                        # Parse timestamp from filename: seg_2026-01-21T09-58-43.wav
+                        try:
+                            # seg_2026-01-21T09-58-43.wav -> 2026-01-21T09:58:43
+                            ts_part = f.replace('seg_', '').replace('.wav', '')  # 2026-01-21T09-58-43
+                            date_part, time_part = ts_part.split('T')  # 2026-01-21, 09-58-43
+                            time_part = time_part.replace('-', ':')  # 09:58:43
+                            ts = datetime.datetime.fromisoformat(f"{date_part}T{time_part}")
+                        except:
+                            ts = datetime.datetime.now()
+                        duration = os.path.getsize(path) / 2 / SAMPLE_RATE
+                        proc_q.put((path, ts.isoformat(), ts.isoformat(), duration))
+                        queued += 1
+            return jsonify({"ok": True, "queued": queued})
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)}), 500
 
     @app.post("/api/start")
     def api_start():
@@ -1050,6 +1083,12 @@ def main():
                 port += 1
         finally:
             sock.close()
+        
+        # Start background process worker (for reprocessing)
+        bg_proc = threading.Thread(target=process_worker, daemon=True, name="bg-processor")
+        bg_proc.start()
+        print("[bg] Background processor started for reprocessing")
+        
         print(f"Open http://{host}:{port} in your browser.")
         # Do not auto-start recorder here; use the UI buttons.
         app.run(host=host, port=port, debug=False)
