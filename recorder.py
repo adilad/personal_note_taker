@@ -3,6 +3,13 @@ import numpy as np
 import sounddevice as sd
 import webrtcvad
 
+# --- Load .env file if present ---
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 # --- Flask UI imports (simple web UI) ---
 try:
     from flask import Flask, jsonify, request, render_template_string
@@ -37,26 +44,37 @@ if USE_DIARIZATION:
         USE_DIARIZATION = False
         print("[diarization] pyannote-audio not installed. Install with: pip install pyannote-audio")
 
-# --- Optional local LLM setup ---
-# Automatically enable if model exists or USE_LLM env var = 1/true
-USE_LLM = os.getenv("USE_LLM", "1").lower() in ("1", "true", "yes", "on")
-LLM_MODEL_PATH = os.path.expanduser(os.getenv("LLM_MODEL_PATH", "~/models/llama-3-8b-instruct.Q4_K_M.gguf"))
-LLM_N_CTX = int(os.getenv("LLM_N_CTX", "4096"))
-LLM_N_THREADS = int(os.getenv("LLM_N_THREADS", "8"))
+# --- LiteLLM setup (preferred) or fallback to local llama.cpp ---
+LITELLM_API_KEY = os.getenv("LITELLM_API_KEY", "")
+LITELLM_BASE_URL = os.getenv("LITELLM_BASE_URL", "https://litellm.marqeta.com")
+LITELLM_MODEL_ID = os.getenv("LITELLM_MODEL_ID", "openai/gpt-4o-mini")
+LITELLM_TEMPERATURE = float(os.getenv("LITELLM_TEMPERATURE", "0.3"))
+LITELLM_MAX_TOKENS = int(os.getenv("MODEL_MAX_TOKENS", "2000"))
 
+USE_LITELLM = bool(LITELLM_API_KEY)
+if USE_LITELLM:
+    try:
+        import requests
+        print(f"[llm] Using LiteLLM: {LITELLM_BASE_URL} model={LITELLM_MODEL_ID}")
+    except ImportError:
+        USE_LITELLM = False
+        print("[llm] requests not installed for LiteLLM")
+
+# --- Fallback: local llama.cpp ---
+USE_LOCAL_LLM = False
 llm = None
-try:
-    from llama_cpp import Llama  # pip install llama-cpp-python
-    if USE_LLM and os.path.exists(LLM_MODEL_PATH):
-        llm = Llama(model_path=LLM_MODEL_PATH, n_ctx=LLM_N_CTX, n_threads=LLM_N_THREADS)
-        print(f"[llm] Loaded local model: {LLM_MODEL_PATH}")
-    else:
-        USE_LLM = False
-        print(f"[llm] Model not found or disabled; using fallback summarizer.")
-except Exception as e:
-    USE_LLM = False
-    llm = None
-    print(f"[llm] Failed to initialize llama.cpp: {e}")
+if not USE_LITELLM:
+    LLM_MODEL_PATH = os.path.expanduser(os.getenv("LLM_MODEL_PATH", "~/models/llama-3-8b-instruct.Q4_K_M.gguf"))
+    try:
+        from llama_cpp import Llama
+        if os.path.exists(LLM_MODEL_PATH):
+            llm = Llama(model_path=LLM_MODEL_PATH, n_ctx=4096, n_threads=8)
+            USE_LOCAL_LLM = True
+            print(f"[llm] Loaded local model: {LLM_MODEL_PATH}")
+        else:
+            print(f"[llm] No LLM configured; using fallback summarizer.")
+    except Exception as e:
+        print(f"[llm] No LLM available: {e}")
 
 # ASR
 from faster_whisper import WhisperModel
@@ -100,15 +118,21 @@ def init_schema(conn):
           summary TEXT,
           keywords TEXT,
           important INTEGER DEFAULT 0,
-          speakers TEXT
+          speakers TEXT,
+          participants TEXT,
+          category TEXT,
+          action_items TEXT,
+          questions TEXT,
+          sentiment TEXT
         )
         """
     )
-    # Migration: add speakers column if missing
+    # Migration: add columns if missing
     cur.execute("PRAGMA table_info(segments)")
     cols = [r[1] for r in cur.fetchall()]
-    if "speakers" not in cols:
-        cur.execute("ALTER TABLE segments ADD COLUMN speakers TEXT")
+    for col in ["speakers", "participants", "category", "action_items", "questions", "sentiment"]:
+        if col not in cols:
+            cur.execute(f"ALTER TABLE segments ADD COLUMN {col} TEXT")
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS daily_digests (
@@ -141,14 +165,6 @@ cur = conn.cursor()
 # --- ASR model (local) ---
 asr_model = WhisperModel(MODEL_SIZE, device="auto", compute_type="int8")  # CPU-friendly
 
-# --- Optional local LLM (ensure llm is defined if USE_LLM toggled above) ---
-if USE_LLM and llm is None and os.path.exists(LLM_MODEL_PATH):
-    try:
-        llm = Llama(model_path=LLM_MODEL_PATH, n_ctx=4096, n_threads=8)
-    except Exception:
-        llm = None
-        USE_LLM = False
-
 # --- Simple extractive summarizer (fallback) ---
 def simple_summarize(text, max_sentences=4):
     sents = [s.strip() for s in text.replace("\n"," ").split(".") if s.strip()]
@@ -167,16 +183,44 @@ def simple_summarize(text, max_sentences=4):
 def llm_summarize(text):
     if not text.strip():
         return ""
-    if not llm:
-        return simple_summarize(text)
-    prompt = f"""You are a meticulous note-taker.
-Summarize the following transcript into concise bullet points with timestamps, action items (who/what/when), decisions, and key takeaways.
-Keep it faithful to the text, no speculation.
+    
+    prompt = """You are a meticulous note-taker. Summarize the following transcript into concise bullet points preserving chronological order. Include action items (who/what/when), decisions, and key takeaways. Keep it faithful to the text, no speculation.
 
 Transcript:
-{text}"""
-    out = llm(prompt, max_tokens=512, temperature=0.1, stop=["</s>"])
-    return out["choices"][0]["text"].strip()
+""" + text
+    
+    # Try LiteLLM first
+    if USE_LITELLM:
+        try:
+            import requests
+            resp = requests.post(
+                f"{LITELLM_BASE_URL}/v1/chat/completions",
+                headers={"Authorization": f"Bearer {LITELLM_API_KEY}", "Content-Type": "application/json"},
+                json={
+                    "model": LITELLM_MODEL_ID,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": LITELLM_TEMPERATURE,
+                    "max_tokens": LITELLM_MAX_TOKENS
+                },
+                timeout=60
+            )
+            if resp.status_code == 200:
+                return resp.json()["choices"][0]["message"]["content"].strip()
+            else:
+                print(f"[llm] LiteLLM error: {resp.status_code} {resp.text[:200]}")
+        except Exception as e:
+            print(f"[llm] LiteLLM request failed: {e}")
+    
+    # Fallback to local llama.cpp
+    if USE_LOCAL_LLM and llm:
+        try:
+            out = llm(prompt, max_tokens=512, temperature=0.1, stop=["</s>"])
+            return out["choices"][0]["text"].strip()
+        except Exception as e:
+            print(f"[llm] Local LLM error: {e}")
+    
+    # Final fallback: extractive summarizer
+    return simple_summarize(text)
 
 # --- Hourly summarization helpers ---
 def _hour_floor(iso_ts: str) -> datetime.datetime:
@@ -200,7 +244,7 @@ def _fetch_texts_for_hour(db_conn: sqlite3.Connection, hour_start: datetime.date
     return texts, hour_end
 
 def _compose_hour_summary(text: str) -> str:
-    return llm_summarize(text) if USE_LLM else simple_summarize(text)
+    return llm_summarize(text)
 
 def _upsert_hourly(db_conn: sqlite3.Connection, hour_start: datetime.datetime, hour_end: datetime.datetime, combined_text: str) -> str:
     summary = _compose_hour_summary(combined_text)
@@ -336,8 +380,9 @@ _FLASK_INDEX = """<!doctype html>
     .segments { display: flex; flex-direction: column; gap: 0.5rem; }
     .seg { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 1rem; cursor: pointer; transition: all 0.2s; }
     .seg:hover { border-color: var(--text2); background: var(--surface2); }
-    .seg-time { font-size: 0.75rem; color: var(--text2); margin-bottom: 0.25rem; }
+    .seg-time { font-size: 0.75rem; color: var(--text2); margin-bottom: 0.25rem; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
     .seg-text { font-size: 0.9rem; color: var(--text); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    .cat { background: var(--accent); color: white; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.65rem; text-transform: uppercase; }
     .empty { text-align: center; padding: 3rem; color: var(--text2); font-size: 0.9rem; }
     .summary-box { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 1.25rem; font-size: 0.9rem; color: var(--text); white-space: pre-wrap; max-height: 300px; overflow-y: auto; }
     .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.8); backdrop-filter: blur(4px); z-index: 100; align-items: center; justify-content: center; padding: 1rem; }
@@ -349,10 +394,15 @@ _FLASK_INDEX = """<!doctype html>
     .modal-close:hover { color: var(--text); }
     .modal-body { padding: 1.25rem; }
     .modal-body p { font-size: 0.8rem; color: var(--text2); margin-bottom: 0.5rem; }
-    .modal-body .content { background: var(--surface2); border-radius: 8px; padding: 1rem; font-size: 0.9rem; color: var(--text); margin-bottom: 1rem; white-space: pre-wrap; }
+    .modal-body .content { background: var(--surface2); border-radius: 8px; padding: 1rem; font-size: 0.9rem; color: var(--text); margin-bottom: 1rem; white-space: pre-wrap; max-height: 200px; overflow-y: auto; }
     .modal-body .label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text2); margin: 1rem 0 0.5rem; }
     .keywords { display: flex; flex-wrap: wrap; gap: 0.5rem; }
     .kw { background: var(--surface2); border-radius: 4px; padding: 0.25rem 0.5rem; font-size: 0.75rem; color: var(--text2); }
+    .collapsible { cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
+    .collapsible::after { content: '▼'; font-size: 0.7rem; transition: transform 0.2s; }
+    .collapsible.collapsed::after { transform: rotate(-90deg); }
+    .collapse-content { max-height: 400px; overflow-y: auto; transition: max-height 0.3s; }
+    .collapse-content.collapsed { max-height: 0; overflow: hidden; }
   </style>
 </head>
 <body>
@@ -366,13 +416,13 @@ _FLASK_INDEX = """<!doctype html>
       <button class="btn" id="exportBtn">Export</button>
     </div>
     <div class="section">
-      <div class="section-title">Recordings</div>
+      <div class="section-title collapsible" id="segToggle">Recordings <span id="segCount"></span></div>
       <input type="text" class="search" id="search" placeholder="Search transcripts...">
-      <div class="segments" id="segments"><div class="empty">No recordings yet</div></div>
+      <div class="segments collapse-content" id="segments"><div class="empty">No recordings yet</div></div>
     </div>
     <div class="section">
-      <div class="section-title">Daily Summary</div>
-      <div class="summary-box" id="summary">Click Summary to generate</div>
+      <div class="section-title collapsible" id="sumToggle">Daily Summary</div>
+      <div class="summary-box collapse-content" id="summary">Click Summary to generate</div>
     </div>
   </div>
   <div class="modal" id="modal">
@@ -384,6 +434,7 @@ _FLASK_INDEX = """<!doctype html>
 <script>
 let segs=[],q='',on=false;
 const $=id=>document.getElementById(id);
+const sentimentEmoji={positive:'😊',negative:'😟',neutral:'😐',mixed:'🤔',urgent:'🚨',frustrated:'😤',excited:'🎉',professional:'💼'};
 async function api(m,p){const r=await fetch(p,{method:m});return r.json();}
 async function sync(){
   const d=await api('GET','/api/health');
@@ -398,12 +449,22 @@ async function load(){
 }
 function render(){
   const f=segs.filter(s=>!q||s.transcript.toLowerCase().includes(q.toLowerCase()));
+  $('segCount').textContent=`(${f.length})`;
   if(!f.length){$('segments').innerHTML='<div class="empty">No recordings yet</div>';return;}
-  $('segments').innerHTML=f.map(s=>`<div class="seg" data-id="${s.id}"><div class="seg-time">${new Date(s.start_ts).toLocaleString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})} · ${s.duration_sec.toFixed(0)}s</div><div class="seg-text">${s.transcript||'...'}</div></div>`).join('');
+  $('segments').innerHTML=f.map(s=>`<div class="seg" data-id="${s.id}"><div class="seg-time">${new Date(s.start_ts).toLocaleString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})} · ${s.duration_sec.toFixed(0)}s ${s.category?`<span class="cat">${s.category}</span>`:''} ${s.sentiment?sentimentEmoji[s.sentiment]||'':''}</div><div class="seg-text">${s.transcript||'...'}</div></div>`).join('');
 }
 function show(id){
   const s=segs.find(x=>x.id==id);if(!s)return;
-  $('modalBody').innerHTML=`<p>${new Date(s.start_ts).toLocaleString()} · ${s.duration_sec.toFixed(1)}s</p>${s.speakers?`<div class="label">Speakers</div><div class="content">${s.speakers}</div>`:''}<div class="label">Transcript</div><div class="content">${s.transcript||'(empty)'}</div>${s.summary?`<div class="label">Summary</div><div class="content">${s.summary}</div>`:''}${s.keywords?`<div class="label">Keywords</div><div class="keywords">${s.keywords.split(',').map(k=>`<span class="kw">${k.trim()}</span>`).join('')}</div>`:''}`;
+  let html=`<p>${new Date(s.start_ts).toLocaleString()} · ${s.duration_sec.toFixed(1)}s</p>`;
+  if(s.category||s.sentiment)html+=`<div class="label">Analysis</div><div class="keywords">${s.category?`<span class="kw">${s.category}</span>`:''}${s.sentiment?`<span class="kw">${sentimentEmoji[s.sentiment]||''} ${s.sentiment}</span>`:''}</div>`;
+  if(s.participants)html+=`<div class="label">Participants</div><div class="keywords">${s.participants.split(',').map(p=>`<span class="kw">${p.trim()}</span>`).join('')}</div>`;
+  if(s.action_items)html+=`<div class="label">⚡ Action Items</div><div class="content" style="white-space:pre-wrap">${s.action_items}</div>`;
+  if(s.questions)html+=`<div class="label">❓ Open Questions</div><div class="content" style="white-space:pre-wrap">${s.questions}</div>`;
+  html+=`<div class="label">Transcript</div><div class="content">${s.transcript||'(empty)'}</div>`;
+  if(s.speakers)html+=`<div class="label">Speaker Attribution</div><div class="content" style="white-space:pre-wrap">${s.speakers}</div>`;
+  html+=`<div class="label">Summary</div><div class="content">${s.summary||'(none)'}</div>`;
+  if(s.keywords)html+=`<div class="label">Keywords</div><div class="keywords">${s.keywords.split(',').map(k=>`<span class="kw">${k.trim()}</span>`).join('')}</div>`;
+  $('modalBody').innerHTML=html;
   $('modal').classList.add('on');
 }
 async function live(){
@@ -413,12 +474,15 @@ async function live(){
   $('liveText').textContent=d.transcript||'Listening...';
 }
 $('recBtn').onclick=async()=>{await api('POST',on?'/api/stop':'/api/start');sync();};
-$('summaryBtn').onclick=async()=>{$('summary').textContent='Generating...';const d=await api('GET','/api/summary');$('summary').textContent=d.summary||'(no data)';};
+$('summaryBtn').onclick=async()=>{$('summary').textContent='Generating...';$('summary').classList.remove('collapsed');$('sumToggle').classList.remove('collapsed');const d=await api('GET','/api/summary');$('summary').textContent=d.summary||'(no data)';};
 $('exportBtn').onclick=async()=>{const d=await api('GET','/api/segments');const b=new Blob([JSON.stringify(d.segments,null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=`voice-${new Date().toISOString().slice(0,10)}.json`;a.click();};
 $('search').oninput=e=>{q=e.target.value;render();};
 $('segments').onclick=e=>{const s=e.target.closest('.seg');if(s)show(s.dataset.id);};
 $('modal').onclick=e=>{if(e.target.id==='modal')$('modal').classList.remove('on');};
 $('modalClose').onclick=()=>$('modal').classList.remove('on');
+// Collapsible sections
+$('segToggle').onclick=()=>{$('segToggle').classList.toggle('collapsed');$('segments').classList.toggle('collapsed');};
+$('sumToggle').onclick=()=>{$('sumToggle').classList.toggle('collapsed');$('summary').classList.toggle('collapsed');};
 // Theme toggle
 let dark=localStorage.getItem('theme')!=='light';
 function setTheme(){document.body.classList.toggle('light',!dark);$('themeBtn').textContent=dark?'☀️':'🌙';localStorage.setItem('theme',dark?'dark':'light');}
@@ -466,7 +530,7 @@ def create_flask_app(host: str = "127.0.0.1", port: int = 5000) -> "Flask":
             c = local_conn.cursor()
             rows = c.execute(
                 """
-                SELECT id, start_ts, end_ts, duration_sec, audio_path, transcript, summary, keywords, important, speakers
+                SELECT id, start_ts, end_ts, duration_sec, audio_path, transcript, summary, keywords, important, speakers, participants, category, action_items, questions, sentiment
                 FROM segments
                 WHERE start_ts >= ?
                 ORDER BY start_ts DESC
@@ -486,7 +550,12 @@ def create_flask_app(host: str = "127.0.0.1", port: int = 5000) -> "Flask":
                     "summary": r[6] or "",
                     "keywords": r[7] or "",
                     "important": r[8] or 0,
-                    "speakers": r[9] or ""
+                    "speakers": r[9] or "",
+                    "participants": r[10] or "",
+                    "category": r[11] or "",
+                    "action_items": r[12] or "",
+                    "questions": r[13] or "",
+                    "sentiment": r[14] or ""
                 })
             return jsonify({"ok": True, "segments": segments})
         except Exception as e:
@@ -502,7 +571,7 @@ def create_flask_app(host: str = "127.0.0.1", port: int = 5000) -> "Flask":
             c = local_conn.cursor()
             rows = c.execute(
                 """
-                SELECT COALESCE(NULLIF(transcript,''), NULLIF(summary,'')) AS txt
+                SELECT start_ts, COALESCE(NULLIF(transcript,''), NULLIF(summary,'')) AS txt
                 FROM segments
                 WHERE start_ts >= ?
                 ORDER BY start_ts ASC
@@ -510,8 +579,12 @@ def create_flask_app(host: str = "127.0.0.1", port: int = 5000) -> "Flask":
                 (start_of_day.isoformat(),)
             ).fetchall()
             local_conn.close()
-            texts = [(r[0] or "").strip() for r in rows if (r and r[0])]
-            combined = "\n".join(texts)
+            texts = []
+            for r in rows:
+                if r and r[1] and r[1].strip():
+                    ts = datetime.datetime.fromisoformat(r[0]).strftime("%I:%M %p")
+                    texts.append(f"[{ts}] {r[1].strip()}")
+            combined = "\n\n".join(texts)
             summary = _compose_hour_summary(combined) if combined else "(no transcripts today)"
             return jsonify({"ok": True, "summary": summary, "count": len(texts)})
         except Exception as e:
@@ -531,6 +604,138 @@ def denoise_audio(wav_path: str) -> np.ndarray:
         print("[nr] applying noise reduction...")
         audio = nr.reduce_noise(y=audio, sr=sr, prop_decrease=0.8)
     return audio
+
+def identify_speakers_with_ai(transcript: str, diarized_text: str = "") -> str:
+    """Use AI to identify speakers and attribute dialogue from transcript."""
+    if not transcript.strip() or not USE_LITELLM:
+        return diarized_text
+    
+    # If we have diarized text, enhance it with names
+    if diarized_text:
+        prompt = f"""Analyze this conversation and identify speakers by their names if mentioned.
+
+Diarized transcript (with generic labels):
+{diarized_text}
+
+Full transcript:
+{transcript}
+
+Replace SPEAKER_XX with actual names where identifiable. Keep original labels if unknown.
+Return ONLY the reformatted transcript."""
+    else:
+        # No diarization - infer speakers from transcript
+        prompt = f"""Analyze this transcript and identify different speakers. Look for:
+- Name mentions ("Hi John", "Thanks Sarah")  
+- Turn-taking patterns (questions followed by answers)
+- Different speaking styles or topics
+
+Transcript:
+{transcript}
+
+Reformat as a dialogue with speaker labels like [Speaker 1], [John], [Sarah], etc.
+If only one speaker, return: [Speaker] followed by the text.
+Return ONLY the formatted dialogue, nothing else."""
+
+    try:
+        import requests
+        resp = requests.post(
+            f"{LITELLM_BASE_URL}/v1/chat/completions",
+            headers={"Authorization": f"Bearer {LITELLM_API_KEY}", "Content-Type": "application/json"},
+            json={
+                "model": LITELLM_MODEL_ID,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.1,
+                "max_tokens": LITELLM_MAX_TOKENS
+            },
+            timeout=60
+        )
+        if resp.status_code == 200:
+            return resp.json()["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        print(f"[ai-speakers] error: {e}")
+    return diarized_text or ""
+
+def extract_participants(transcript: str) -> str:
+    """Use AI to extract participant names mentioned in the transcript."""
+    if not transcript.strip() or not USE_LITELLM:
+        return ""
+    
+    prompt = f"""Extract all person names mentioned in this transcript. Return as comma-separated list.
+If no names found, return empty string.
+
+Transcript:
+{transcript}
+
+Names (comma-separated):"""
+
+    try:
+        import requests
+        resp = requests.post(
+            f"{LITELLM_BASE_URL}/v1/chat/completions",
+            headers={"Authorization": f"Bearer {LITELLM_API_KEY}", "Content-Type": "application/json"},
+            json={
+                "model": LITELLM_MODEL_ID,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.1,
+                "max_tokens": 200
+            },
+            timeout=30
+        )
+        if resp.status_code == 200:
+            names = resp.json()["choices"][0]["message"]["content"].strip()
+            # Clean up response
+            if names.lower() in ("none", "n/a", "no names", "empty", ""):
+                return ""
+            return names
+    except Exception as e:
+        print(f"[ai-participants] error: {e}")
+    return ""
+
+def analyze_segment(transcript: str) -> dict:
+    """AI analysis: category, action items, questions, sentiment."""
+    result = {"category": "", "action_items": "", "questions": "", "sentiment": ""}
+    if not transcript.strip() or not USE_LITELLM:
+        return result
+    
+    prompt = f"""Analyze this transcript and return a JSON object with these fields:
+
+1. "category": One of: meeting, brainstorm, todo, personal, technical, casual, presentation, interview, other
+2. "action_items": List of tasks as "[ ] Person: Task (Due: date)" format, one per line. Empty string if none.
+3. "questions": Unanswered questions that need follow-up, one per line. Empty string if none.
+4. "sentiment": One of: positive, negative, neutral, mixed, urgent, frustrated, excited, professional
+
+Transcript:
+{transcript}
+
+Return ONLY valid JSON, no markdown or explanation."""
+
+    try:
+        import requests
+        resp = requests.post(
+            f"{LITELLM_BASE_URL}/v1/chat/completions",
+            headers={"Authorization": f"Bearer {LITELLM_API_KEY}", "Content-Type": "application/json"},
+            json={
+                "model": LITELLM_MODEL_ID,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.1,
+                "max_tokens": 1000
+            },
+            timeout=60
+        )
+        if resp.status_code == 200:
+            content = resp.json()["choices"][0]["message"]["content"].strip()
+            # Parse JSON from response
+            content = content.replace("```json", "").replace("```", "").strip()
+            data = json.loads(content)
+            result["category"] = data.get("category", "")
+            result["action_items"] = data.get("action_items", "")
+            result["questions"] = data.get("questions", "")
+            result["sentiment"] = data.get("sentiment", "")
+    except json.JSONDecodeError as e:
+        print(f"[ai-analyze] JSON parse error: {e}")
+    except Exception as e:
+        print(f"[ai-analyze] error: {e}")
+    return result
 
 def diarize_audio(wav_path: str, transcript_segments) -> str:
     """Run speaker diarization and merge with transcript."""
@@ -581,23 +786,44 @@ def process_worker():
             segments_list = list(segments_list)  # materialize generator
             txt = " ".join(s.text.strip() for s in segments_list).strip()
             
-            # Diarization
+            # Diarization (if enabled via pyannote)
             speakers_txt = diarize_audio(wav_path, segments_list)
+            
+            # AI: identify/infer speakers (works with or without diarization)
+            if txt and USE_LITELLM:
+                print("[ai] identifying speakers...")
+                speakers_txt = identify_speakers_with_ai(txt, speakers_txt)
+            
+            # AI: extract participant names
+            participants = ""
+            if txt and USE_LITELLM:
+                print("[ai] extracting participants...")
+                participants = extract_participants(txt)
+                if participants:
+                    print(f"[ai] participants: {participants}")
+            
+            # AI analysis: category, action items, questions, sentiment
+            analysis = {"category": "", "action_items": "", "questions": "", "sentiment": ""}
+            if txt and USE_LITELLM:
+                print("[ai] analyzing segment...")
+                analysis = analyze_segment(txt)
+                if analysis["category"]:
+                    print(f"[ai] category: {analysis['category']}, sentiment: {analysis['sentiment']}")
             
             if not txt:
                 print("[asr] transcription empty for", wav_path)
             else:
                 preview = (txt[:160] + "…") if len(txt) > 160 else txt
                 print("[asr] transcript:", preview)
-            summary = llm_summarize(txt) if USE_LLM else simple_summarize(txt)
+            summary = llm_summarize(txt)
             keywords = ",".join(extract_keywords(txt))
             import sqlite3 as _sqlite3
             attempts = 0
             while True:
                 try:
                     local_cur.execute(
-                        "INSERT INTO segments(start_ts,end_ts,duration_sec,audio_path,transcript,summary,keywords,speakers) VALUES (?,?,?,?,?,?,?,?)",
-                        (seg_start_ts_iso, seg_end_ts_iso, duration, wav_path, txt, summary, keywords, speakers_txt)
+                        "INSERT INTO segments(start_ts,end_ts,duration_sec,audio_path,transcript,summary,keywords,speakers,participants,category,action_items,questions,sentiment) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (seg_start_ts_iso, seg_end_ts_iso, duration, wav_path, txt, summary, keywords, speakers_txt, participants, analysis["category"], analysis["action_items"], analysis["questions"], analysis["sentiment"])
                     )
                     local_conn.commit()
                     break
