@@ -291,242 +291,141 @@ def _stop_threads():
 
 # --- Modern Flask HTML template ---
 _FLASK_INDEX = """<!doctype html>
-<html>
+<html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Recorder</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Voice</title>
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #fafafa; color: #333; line-height: 1.5; }
-    .container { max-width: 1200px; margin: 0 auto; padding: 2rem 1rem; }
-    header { margin-bottom: 2rem; }
-    h1 { font-size: 1.5rem; font-weight: 600; margin-bottom: 0.5rem; }
-    .status { display: inline-flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: #666; }
-    .dot { width: 8px; height: 8px; border-radius: 50%; background: #ddd; }
-    .dot.on { background: #ef4444; animation: pulse 2s infinite; }
-    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
-    .controls { display: flex; gap: 0.5rem; margin: 1.5rem 0; }
-    button { padding: 0.5rem 1rem; border: 1px solid #ddd; border-radius: 6px; background: white; color: #333; font-size: 0.9rem; cursor: pointer; transition: all 0.15s; }
-    button:hover { border-color: #999; background: #f9f9f9; }
-    button:active { transform: scale(0.98); }
-    .btn-start { border-color: #10b981; color: #10b981; }
-    .btn-start:hover { background: #f0fdf4; border-color: #059669; }
-    .btn-stop { border-color: #ef4444; color: #ef4444; }
-    .btn-stop:hover { background: #fef2f2; border-color: #dc2626; }
-    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
-    .card { background: white; border: 1px solid #e5e5e5; border-radius: 8px; padding: 1.25rem; }
-    .card h2 { font-size: 1rem; font-weight: 600; margin-bottom: 1rem; }
-    .search { width: 100%; padding: 0.5rem; border: 1px solid #e5e5e5; border-radius: 6px; font-size: 0.9rem; margin-bottom: 0.75rem; }
-    .search:focus { outline: none; border-color: #999; }
-    .list { max-height: 500px; overflow-y: auto; }
-    .item { padding: 0.75rem; border-bottom: 1px solid #f5f5f5; cursor: pointer; }
-    .item:hover { background: #fafafa; }
-    .item:last-child { border-bottom: none; }
-    .time { font-size: 0.8rem; color: #999; }
-    .text { font-size: 0.9rem; margin-top: 0.25rem; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-    .summary { background: #fafafa; padding: 1rem; border-radius: 6px; font-size: 0.9rem; white-space: pre-wrap; max-height: 500px; overflow-y: auto; line-height: 1.6; }
-    .empty { text-align: center; padding: 2rem; color: #999; font-size: 0.9rem; }
-    .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.4); z-index: 1000; align-items: center; justify-content: center; }
-    .modal.active { display: flex; }
-    .modal-content { background: white; padding: 1.5rem; border-radius: 8px; max-width: 600px; width: 90%; max-height: 80vh; overflow-y: auto; }
-    .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
-    .modal-close { background: none; border: none; font-size: 1.5rem; cursor: pointer; color: #999; }
-    @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
-    @media (prefers-color-scheme: dark) {
-      body { background: #111; color: #ddd; }
-      .card, button, .search, .modal-content { background: #1a1a1a; border-color: #333; color: #ddd; }
-      button:hover { background: #222; }
-      .item:hover { background: #222; }
-      .summary { background: #222; }
-      .dot { background: #444; }
+    :root {
+      --bg: #0a0a0a; --surface: #141414; --surface2: #1c1c1c;
+      --border: #262626; --text: #fafafa; --text2: #a1a1a1;
+      --accent: #3b82f6; --red: #ef4444; --green: #22c55e;
     }
+    .light {
+      --bg: #ffffff; --surface: #f9fafb; --surface2: #f3f4f6;
+      --border: #e5e7eb; --text: #111827; --text2: #6b7280;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Inter', -apple-system, system-ui, sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; min-height: 100vh; transition: background 0.3s, color 0.3s; }
+    .app { max-width: 720px; margin: 0 auto; padding: 3rem 1.5rem; }
+    header { text-align: center; margin-bottom: 3rem; position: relative; }
+    h1 { font-size: 1.25rem; font-weight: 500; letter-spacing: -0.02em; color: var(--text2); }
+    .theme-btn { position: absolute; top: 0; right: 0; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; width: 36px; height: 36px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 1rem; transition: all 0.2s; }
+    .theme-btn:hover { border-color: var(--text2); }
+    .rec-btn { width: 80px; height: 80px; border-radius: 50%; border: 2px solid var(--border); background: var(--surface); cursor: pointer; margin: 2rem auto; display: flex; align-items: center; justify-content: center; transition: all 0.3s ease; }
+    .rec-btn:hover { border-color: var(--text2); transform: scale(1.05); }
+    .rec-btn.on { border-color: var(--red); background: rgba(239,68,68,0.1); }
+    .rec-btn .inner { width: 24px; height: 24px; border-radius: 50%; background: var(--text2); transition: all 0.3s ease; }
+    .rec-btn.on .inner { background: var(--red); border-radius: 4px; animation: pulse 1.5s infinite; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+    .status { text-align: center; font-size: 0.8rem; color: var(--text2); text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 2rem; }
+    .live { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1.25rem; margin-bottom: 2rem; display: none; }
+    .live.on { display: block; }
+    .live-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--red); margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; }
+    .live-label::before { content: ''; width: 6px; height: 6px; background: var(--red); border-radius: 50%; animation: pulse 1.5s infinite; }
+    .live-text { font-size: 0.95rem; color: var(--text); min-height: 1.5rem; }
+    .actions { display: flex; justify-content: center; gap: 0.5rem; margin-bottom: 3rem; }
+    .btn { padding: 0.5rem 1rem; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text2); font-size: 0.8rem; cursor: pointer; transition: all 0.2s; }
+    .btn:hover { border-color: var(--text2); color: var(--text); }
+    .section { margin-bottom: 2rem; }
+    .section-title { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text2); margin-bottom: 1rem; }
+    .search { width: 100%; padding: 0.75rem 1rem; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); font-size: 0.9rem; margin-bottom: 1rem; }
+    .search:focus { outline: none; border-color: var(--accent); }
+    .search::placeholder { color: var(--text2); }
+    .segments { display: flex; flex-direction: column; gap: 0.5rem; }
+    .seg { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 1rem; cursor: pointer; transition: all 0.2s; }
+    .seg:hover { border-color: var(--text2); background: var(--surface2); }
+    .seg-time { font-size: 0.75rem; color: var(--text2); margin-bottom: 0.25rem; }
+    .seg-text { font-size: 0.9rem; color: var(--text); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    .empty { text-align: center; padding: 3rem; color: var(--text2); font-size: 0.9rem; }
+    .summary-box { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 1.25rem; font-size: 0.9rem; color: var(--text); white-space: pre-wrap; max-height: 300px; overflow-y: auto; }
+    .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.8); backdrop-filter: blur(4px); z-index: 100; align-items: center; justify-content: center; padding: 1rem; }
+    .modal.on { display: flex; }
+    .modal-box { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; width: 100%; max-width: 500px; max-height: 80vh; overflow-y: auto; }
+    .modal-head { padding: 1.25rem; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+    .modal-head h2 { font-size: 0.9rem; font-weight: 500; }
+    .modal-close { background: none; border: none; color: var(--text2); font-size: 1.25rem; cursor: pointer; padding: 0.25rem; }
+    .modal-close:hover { color: var(--text); }
+    .modal-body { padding: 1.25rem; }
+    .modal-body p { font-size: 0.8rem; color: var(--text2); margin-bottom: 0.5rem; }
+    .modal-body .content { background: var(--surface2); border-radius: 8px; padding: 1rem; font-size: 0.9rem; color: var(--text); margin-bottom: 1rem; white-space: pre-wrap; }
+    .modal-body .label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text2); margin: 1rem 0 0.5rem; }
+    .keywords { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+    .kw { background: var(--surface2); border-radius: 4px; padding: 0.25rem 0.5rem; font-size: 0.75rem; color: var(--text2); }
   </style>
 </head>
 <body>
-  <div class="container">
-    <header>
-      <h1>Recorder</h1>
-      <div class="status">
-        <div class="dot" id="dot"></div>
-        <span id="statusText">Loading...</span>
-      </div>
-    </header>
-
-    <div class="controls">
-      <button class="btn-start" id="startBtn">Start</button>
-      <button class="btn-stop" id="stopBtn">Stop</button>
-      <button id="refreshBtn">Refresh</button>
-      <button id="summaryBtn">Summary</button>
-      <button id="exportBtn">Export</button>
+  <div class="app">
+    <header><h1>Voice Recorder</h1><button class="theme-btn" id="themeBtn">☀️</button></header>
+    <button class="rec-btn" id="recBtn"><div class="inner"></div></button>
+    <div class="status" id="status">Ready</div>
+    <div class="live" id="live"><div class="live-label">Live</div><div class="live-text" id="liveText"></div></div>
+    <div class="actions">
+      <button class="btn" id="summaryBtn">Summary</button>
+      <button class="btn" id="exportBtn">Export</button>
     </div>
-
-    <div class="card live-card" id="liveCard" style="display:none; margin-bottom:1rem;">
-      <h2>🎤 Live</h2>
-      <div class="summary" id="liveBox" style="min-height:60px;"></div>
+    <div class="section">
+      <div class="section-title">Recordings</div>
+      <input type="text" class="search" id="search" placeholder="Search transcripts...">
+      <div class="segments" id="segments"><div class="empty">No recordings yet</div></div>
     </div>
-
-    <div class="grid">
-      <div class="card">
-        <h2>Segments</h2>
-        <input type="text" class="search" id="searchBox" placeholder="Search...">
-        <div class="list" id="segmentList">
-          <div class="empty">No segments</div>
-        </div>
-      </div>
-
-      <div class="card">
-        <h2>Summary</h2>
-        <div class="summary" id="summaryBox">Click Summary to generate</div>
-      </div>
+    <div class="section">
+      <div class="section-title">Daily Summary</div>
+      <div class="summary-box" id="summary">Click Summary to generate</div>
     </div>
   </div>
-
-  <div class="modal" id="segmentModal">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h2>Details</h2>
-        <button class="modal-close" onclick="closeModal()">×</button>
-      </div>
-      <div id="modalBody"></div>
+  <div class="modal" id="modal">
+    <div class="modal-box">
+      <div class="modal-head"><h2>Recording Details</h2><button class="modal-close" id="modalClose">&times;</button></div>
+      <div class="modal-body" id="modalBody"></div>
     </div>
   </div>
-
-  <script>
-    let segments = [];
-    let searchTerm = '';
-
-    async function api(method, path) {
-      const res = await fetch(path, { method });
-      if (!res.ok) throw new Error(await res.text());
-      return res.json();
-    }
-
-    async function updateStatus() {
-      try {
-        const data = await api('GET', '/api/health');
-        const dot = document.getElementById('dot');
-        const text = document.getElementById('statusText');
-        if (data.running) {
-          dot.classList.add('on');
-          text.textContent = 'Recording';
-        } else {
-          dot.classList.remove('on');
-          text.textContent = 'Idle';
-        }
-      } catch (e) {
-        document.getElementById('statusText').textContent = 'Error';
-      }
-    }
-
-    async function loadSegments() {
-      try {
-        const data = await api('GET', '/api/segments');
-        segments = data.segments || [];
-        renderSegments();
-      } catch (e) {
-        console.error(e);
-      }
-    }
-
-    function renderSegments() {
-      const list = document.getElementById('segmentList');
-      const filtered = segments.filter(s => 
-        !searchTerm || (s.transcript && s.transcript.toLowerCase().includes(searchTerm.toLowerCase()))
-      );
-      
-      if (filtered.length === 0) {
-        list.innerHTML = '<div class="empty">No segments</div>';
-        return;
-      }
-
-      list.innerHTML = filtered.map(s => `
-        <div class="item" onclick="showSegment(${s.id})">
-          <div class="time">${formatTime(s.start_ts)} • ${s.duration_sec.toFixed(1)}s</div>
-          <div class="text">${s.transcript || '...'}</div>
-        </div>
-      `).join('');
-    }
-
-    function formatTime(iso) {
-      const d = new Date(iso);
-      return d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-    }
-
-    function showSegment(id) {
-      const seg = segments.find(s => s.id === id);
-      if (!seg) return;
-      const modal = document.getElementById('segmentModal');
-      const body = document.getElementById('modalBody');
-      body.innerHTML = `
-        <p><strong>Time:</strong> ${new Date(seg.start_ts).toLocaleString()}</p>
-        <p><strong>Duration:</strong> ${seg.duration_sec.toFixed(1)}s</p>
-        ${seg.speakers ? `<p style="margin-top:1rem"><strong>Speakers:</strong></p><div class="summary" style="white-space:pre-wrap">${seg.speakers}</div>` : ''}
-        <p style="margin-top:1rem"><strong>Transcript:</strong></p>
-        <div class="summary">${seg.transcript || '(no transcript)'}</div>
-        ${seg.summary ? `<p style="margin-top:1rem"><strong>Summary:</strong></p><div class="summary">${seg.summary}</div>` : ''}
-        ${seg.keywords ? `<p style="margin-top:1rem"><strong>Keywords:</strong> ${seg.keywords}</p>` : ''}
-      `;
-      modal.classList.add('active');
-    }
-
-    function closeModal() {
-      document.getElementById('segmentModal').classList.remove('active');
-    }
-
-    async function generateSummary() {
-      const box = document.getElementById('summaryBox');
-      box.textContent = 'Generating...';
-      try {
-        const data = await api('GET', '/api/summary');
-        box.textContent = data.summary || '(no data)';
-      } catch (e) {
-        box.textContent = 'Error: ' + e.message;
-      }
-    }
-
-    async function exportData() {
-      try {
-        const data = await api('GET', '/api/segments');
-        const blob = new Blob([JSON.stringify(data.segments, null, 2)], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `recorder-${new Date().toISOString().split('T')[0]}.json`;
-        a.click();
-      } catch (e) {
-        alert('Export failed');
-      }
-    }
-
-    document.getElementById('startBtn').onclick = async () => { await api('POST', '/api/start'); await updateStatus(); };
-    document.getElementById('stopBtn').onclick = async () => { await api('POST', '/api/stop'); await updateStatus(); };
-    document.getElementById('refreshBtn').onclick = () => { loadSegments(); updateStatus(); };
-
-    async function updateLive() {
-      try {
-        const data = await api('GET', '/api/live');
-        const card = document.getElementById('liveCard');
-        const box = document.getElementById('liveBox');
-        if (data.running) {
-          card.style.display = 'block';
-          box.textContent = data.transcript || '(listening...)';
-        } else {
-          card.style.display = 'none';
-        }
-      } catch (e) {}
-    }
-    setInterval(updateLive, 1000);
-    document.getElementById('summaryBtn').onclick = generateSummary;
-    document.getElementById('exportBtn').onclick = exportData;
-    document.getElementById('searchBox').oninput = (e) => { searchTerm = e.target.value; renderSegments(); };
-    document.getElementById('segmentModal').onclick = (e) => { if (e.target.id === 'segmentModal') closeModal(); };
-
-    updateStatus();
-    loadSegments();
-    setInterval(updateStatus, 3000);
-    setInterval(loadSegments, 5000);
-  </script>
+<script>
+let segs=[],q='',on=false;
+const $=id=>document.getElementById(id);
+async function api(m,p){const r=await fetch(p,{method:m});return r.json();}
+async function sync(){
+  const d=await api('GET','/api/health');
+  on=d.running;
+  $('recBtn').classList.toggle('on',on);
+  $('status').textContent=on?'Recording':'Ready';
+}
+async function load(){
+  const d=await api('GET','/api/segments');
+  segs=d.segments||[];
+  render();
+}
+function render(){
+  const f=segs.filter(s=>!q||s.transcript.toLowerCase().includes(q.toLowerCase()));
+  if(!f.length){$('segments').innerHTML='<div class="empty">No recordings yet</div>';return;}
+  $('segments').innerHTML=f.map(s=>`<div class="seg" data-id="${s.id}"><div class="seg-time">${new Date(s.start_ts).toLocaleString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})} · ${s.duration_sec.toFixed(0)}s</div><div class="seg-text">${s.transcript||'...'}</div></div>`).join('');
+}
+function show(id){
+  const s=segs.find(x=>x.id==id);if(!s)return;
+  $('modalBody').innerHTML=`<p>${new Date(s.start_ts).toLocaleString()} · ${s.duration_sec.toFixed(1)}s</p>${s.speakers?`<div class="label">Speakers</div><div class="content">${s.speakers}</div>`:''}<div class="label">Transcript</div><div class="content">${s.transcript||'(empty)'}</div>${s.summary?`<div class="label">Summary</div><div class="content">${s.summary}</div>`:''}${s.keywords?`<div class="label">Keywords</div><div class="keywords">${s.keywords.split(',').map(k=>`<span class="kw">${k.trim()}</span>`).join('')}</div>`:''}`;
+  $('modal').classList.add('on');
+}
+async function live(){
+  if(!on){$('live').classList.remove('on');return;}
+  const d=await api('GET','/api/live');
+  $('live').classList.add('on');
+  $('liveText').textContent=d.transcript||'Listening...';
+}
+$('recBtn').onclick=async()=>{await api('POST',on?'/api/stop':'/api/start');sync();};
+$('summaryBtn').onclick=async()=>{$('summary').textContent='Generating...';const d=await api('GET','/api/summary');$('summary').textContent=d.summary||'(no data)';};
+$('exportBtn').onclick=async()=>{const d=await api('GET','/api/segments');const b=new Blob([JSON.stringify(d.segments,null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=`voice-${new Date().toISOString().slice(0,10)}.json`;a.click();};
+$('search').oninput=e=>{q=e.target.value;render();};
+$('segments').onclick=e=>{const s=e.target.closest('.seg');if(s)show(s.dataset.id);};
+$('modal').onclick=e=>{if(e.target.id==='modal')$('modal').classList.remove('on');};
+$('modalClose').onclick=()=>$('modal').classList.remove('on');
+// Theme toggle
+let dark=localStorage.getItem('theme')!=='light';
+function setTheme(){document.body.classList.toggle('light',!dark);$('themeBtn').textContent=dark?'☀️':'🌙';localStorage.setItem('theme',dark?'dark':'light');}
+setTheme();
+$('themeBtn').onclick=()=>{dark=!dark;setTheme();};
+sync();load();setInterval(sync,3000);setInterval(load,5000);setInterval(live,1000);
+</script>
 </body>
 </html>"""
 
