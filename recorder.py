@@ -79,6 +79,10 @@ if not USE_LITELLM:
 # ASR
 from faster_whisper import WhisperModel
 
+# --- LiteLLM Transcription (cloud first, local fallback) ---
+USE_LITELLM_TRANSCRIPTION = os.getenv("USE_LITELLM_TRANSCRIPTION", "0").lower() in ("1", "true", "yes", "on")
+LITELLM_TRANSCRIPTION_MODEL = os.getenv("LITELLM_TRANSCRIPTION_MODEL", "whisper-1")  # or azure/whisper, etc.
+
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 AUDIO_DIR = os.path.join(APP_DIR, "audio")
 DB_PATH = os.path.join(APP_DIR, "journal.db")
@@ -165,6 +169,42 @@ cur = conn.cursor()
 # --- ASR model (local) ---
 asr_model = WhisperModel(MODEL_SIZE, device="auto", compute_type="int8")  # CPU-friendly
 
+# --- Transcription function (LiteLLM cloud or local Whisper) ---
+def transcribe_audio(wav_path: str, audio_array: np.ndarray = None):
+    """
+    Transcribe audio. Returns (transcript_text, segments_list).
+    Tries LiteLLM cloud transcription first if enabled, falls back to local Whisper.
+    """
+    # Try LiteLLM cloud transcription
+    if USE_LITELLM_TRANSCRIPTION and LITELLM_API_KEY:
+        try:
+            import requests
+            with open(wav_path, "rb") as f:
+                resp = requests.post(
+                    f"{LITELLM_BASE_URL}/audio/transcriptions",
+                    headers={"Authorization": f"Bearer {LITELLM_API_KEY}"},
+                    files={"file": (os.path.basename(wav_path), f, "audio/wav")},
+                    data={"model": LITELLM_TRANSCRIPTION_MODEL, "language": "en"},
+                    timeout=60
+                )
+            if resp.status_code == 200:
+                result = resp.json()
+                txt = result.get("text", "").strip()
+                print(f"[asr] LiteLLM transcription OK ({len(txt)} chars)")
+                return txt, []  # no segment info from cloud API
+            else:
+                print(f"[asr] LiteLLM failed ({resp.status_code}), falling back to local")
+        except Exception as e:
+            print(f"[asr] LiteLLM error: {e}, falling back to local")
+    
+    # Local Whisper fallback
+    if audio_array is None:
+        audio_array = denoise_audio(wav_path)
+    segments_list, _ = asr_model.transcribe(audio_array, beam_size=BEAM_SIZE, vad_filter=False, language="en")
+    segments_list = list(segments_list)
+    txt = " ".join(s.text.strip() for s in segments_list).strip()
+    return txt, segments_list
+
 # --- Simple extractive summarizer (fallback) ---
 def simple_summarize(text, max_sentences=4):
     sents = [s.strip() for s in text.replace("\n"," ").split(".") if s.strip()]
@@ -231,27 +271,35 @@ Be brief and direct.
 Transcript:
 {text}"""
     
-    # Try LiteLLM first
+    # Try LiteLLM first (with retry for transient errors)
     if USE_LITELLM:
-        try:
-            import requests
-            resp = requests.post(
-                f"{LITELLM_BASE_URL}/v1/chat/completions",
-                headers={"Authorization": f"Bearer {LITELLM_API_KEY}", "Content-Type": "application/json"},
-                json={
-                    "model": LITELLM_MODEL_ID,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": LITELLM_TEMPERATURE,
-                    "max_tokens": 8000 if is_daily else LITELLM_MAX_TOKENS
-                },
-                timeout=120
-            )
-            if resp.status_code == 200:
-                return resp.json()["choices"][0]["message"]["content"].strip()
-            else:
-                print(f"[llm] LiteLLM error: {resp.status_code} {resp.text[:200]}")
-        except Exception as e:
-            print(f"[llm] LiteLLM request failed: {e}")
+        import requests
+        for attempt in range(3):
+            try:
+                resp = requests.post(
+                    f"{LITELLM_BASE_URL}/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {LITELLM_API_KEY}", "Content-Type": "application/json"},
+                    json={
+                        "model": LITELLM_MODEL_ID,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": LITELLM_TEMPERATURE,
+                        "max_tokens": 2000 if is_daily else LITELLM_MAX_TOKENS
+                    },
+                    timeout=120
+                )
+                if resp.status_code == 200:
+                    return resp.json()["choices"][0]["message"]["content"].strip()
+                elif resp.status_code in (502, 503, 504, 429):
+                    print(f"[llm] LiteLLM {resp.status_code}, retry {attempt+1}/3...")
+                    time.sleep(2 ** attempt)
+                    continue
+                else:
+                    print(f"[llm] LiteLLM error: {resp.status_code} {resp.text[:200]}")
+                    break
+            except Exception as e:
+                print(f"[llm] LiteLLM request failed: {e}")
+                if attempt < 2:
+                    time.sleep(2 ** attempt)
     
     # Fallback to local llama.cpp
     if USE_LOCAL_LLM and llm:
@@ -415,7 +463,9 @@ _FLASK_INDEX = """<!doctype html>
     .btn { padding: 0.5rem 1rem; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text2); font-size: 0.8rem; cursor: pointer; transition: all 0.2s; }
     .btn:hover { border-color: var(--text2); color: var(--text); }
     .section { margin-bottom: 2rem; }
-    .section-title { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text2); margin-bottom: 1rem; }
+    .section-title { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text2); margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem; }
+    .copy-btn { background: none; border: none; cursor: pointer; font-size: 0.9rem; opacity: 0.6; padding: 0; }
+    .copy-btn:hover { opacity: 1; }
     .search { width: 100%; padding: 0.75rem 1rem; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); font-size: 0.9rem; margin-bottom: 1rem; }
     .search:focus { outline: none; border-color: var(--accent); }
     .search::placeholder { color: var(--text2); }
@@ -464,7 +514,7 @@ _FLASK_INDEX = """<!doctype html>
       <div class="segments collapse-content" id="segments"><div class="empty">No recordings yet</div></div>
     </div>
     <div class="section">
-      <div class="section-title collapsible" id="sumToggle">Daily Summary</div>
+      <div class="section-title collapsible" id="sumToggle">Daily Summary <button class="copy-btn" id="copySummary" title="Copy to clipboard">📋</button></div>
       <div class="summary-box collapse-content" id="summary">Click Summary to generate</div>
     </div>
   </div>
@@ -526,7 +576,8 @@ $('modal').onclick=e=>{if(e.target.id==='modal')$('modal').classList.remove('on'
 $('modalClose').onclick=()=>$('modal').classList.remove('on');
 // Collapsible sections
 $('segToggle').onclick=()=>{$('segToggle').classList.toggle('collapsed');$('segments').classList.toggle('collapsed');};
-$('sumToggle').onclick=()=>{$('sumToggle').classList.toggle('collapsed');$('summary').classList.toggle('collapsed');};
+$('sumToggle').onclick=e=>{if(e.target.id==='copySummary')return;$('sumToggle').classList.toggle('collapsed');$('summary').classList.toggle('collapsed');};
+$('copySummary').onclick=()=>{navigator.clipboard.writeText($('summary').textContent);$('copySummary').textContent='✓';setTimeout(()=>$('copySummary').textContent='📋',1500);};
 // Theme toggle
 let dark=localStorage.getItem('theme')!=='light';
 function setTheme(){document.body.classList.toggle('light',!dark);$('themeBtn').textContent=dark?'☀️':'🌙';localStorage.setItem('theme',dark?'dark':'light');}
@@ -856,10 +907,8 @@ def process_worker():
             # Denoise audio
             audio = denoise_audio(wav_path)
             
-            # Transcribe
-            segments_list, _ = asr_model.transcribe(audio, beam_size=BEAM_SIZE, vad_filter=False, language="en")
-            segments_list = list(segments_list)  # materialize generator
-            txt = " ".join(s.text.strip() for s in segments_list).strip()
+            # Transcribe (LiteLLM cloud or local Whisper)
+            txt, segments_list = transcribe_audio(wav_path, audio)
             
             # Diarization (if enabled via pyannote)
             speakers_txt = diarize_audio(wav_path, segments_list)
