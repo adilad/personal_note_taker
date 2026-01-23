@@ -220,45 +220,89 @@ def simple_summarize(text, max_sentences=4):
         chosen.append(s)
     return ". ".join(chosen) + ("." if chosen else "")
 
+def _summarize_chunk_with_times(text):
+    """Summarize a chunk while preserving timestamp references."""
+    prompt = f"""Summarize these timestamped recordings. KEEP the timestamps [HH:MM AM/PM] in your summary to show when things happened.
+
+Format: For each topic/discussion, include the time it occurred.
+
+Recordings:
+{text}"""
+    
+    if USE_LITELLM:
+        import requests
+        try:
+            resp = requests.post(
+                f"{LITELLM_BASE_URL}/v1/chat/completions",
+                headers={"Authorization": f"Bearer {LITELLM_API_KEY}", "Content-Type": "application/json"},
+                json={"model": LITELLM_MODEL_ID, "messages": [{"role": "user", "content": prompt}], "temperature": LITELLM_TEMPERATURE, "max_tokens": 1000},
+                timeout=120
+            )
+            if resp.status_code == 200:
+                return resp.json()["choices"][0]["message"]["content"].strip()
+        except Exception as e:
+            print(f"[llm] Chunk summarize error: {e}")
+    return simple_summarize(text)
+
 def llm_summarize(text, is_daily=False):
     if not text.strip():
         return ""
     
+    # For daily summaries with lots of text, chunk and summarize iteratively
+    MAX_CHARS = 12000  # ~3k tokens, safe for most models
+    if is_daily and len(text) > MAX_CHARS:
+        chunks = []
+        lines = text.split("\n\n")
+        current = ""
+        for line in lines:
+            if len(current) + len(line) > MAX_CHARS:
+                if current:
+                    chunks.append(current)
+                current = line
+            else:
+                current = current + "\n\n" + line if current else line
+        if current:
+            chunks.append(current)
+        
+        # Summarize each chunk with detailed notes
+        all_notes = []
+        for i, chunk in enumerate(chunks):
+            print(f"[llm] Summarizing chunk {i+1}/{len(chunks)}...")
+            import re
+            times = re.findall(r'\[(\d{1,2}:\d{2} [AP]M)\]', chunk)
+            time_range = f"({times[0]} - {times[-1]})" if times else ""
+            summary = _summarize_chunk_with_times(chunk)
+            all_notes.append(f"### Part {i+1} {time_range}\n{summary}")
+        
+        # Return combined chunk summaries directly (no re-summarization)
+        return "## 📝 Daily Notes\n\n" + "\n\n---\n\n".join(all_notes)
+    
     if is_daily:
         prompt = f"""Create comprehensive meeting notes from this day's voice recordings.
 
-The recordings are timestamped like [HH:MM AM/PM].
+IMPORTANT: Include timestamps [HH:MM AM/PM] throughout your notes to show WHEN each thing happened.
 
 Structure your notes as:
 
-## 📝 Detailed Notes
-Go through each recording chronologically and capture ALL important details:
-- What was discussed
-- Who said what (if identifiable)
-- Specific numbers, dates, names mentioned
-- Context and background information
-- Problems raised and solutions proposed
-- Questions asked and answers given
-
-Be thorough - don't skip anything important.
+## 📝 Detailed Notes (with timestamps)
+Go through chronologically, include the time for each item:
+- [TIME] What was discussed
+- [TIME] Key points, decisions, names mentioned
 
 ## 📊 Summary
 1-2 paragraph overview of the day.
 
 ## 🎯 Key Topics
-- Main subjects discussed (bullet points)
+- Main subjects discussed
 
 ## ✅ Decisions Made
-- Any decisions or conclusions reached
+- [TIME] Decision made
 
 ## ⚡ Action Items
-- Person: Task (Due date if mentioned)
-
-## 💬 Notable Quotes
-- Important statements worth remembering
+- [TIME] Person: Task
 
 ## ❓ Open Questions
-- Unanswered questions that need follow-up
+- Unanswered questions
 
 ---
 Recordings:
@@ -283,7 +327,7 @@ Transcript:
                         "model": LITELLM_MODEL_ID,
                         "messages": [{"role": "user", "content": prompt}],
                         "temperature": LITELLM_TEMPERATURE,
-                        "max_tokens": 2000 if is_daily else LITELLM_MAX_TOKENS
+                        "max_tokens": 8000 if is_daily else LITELLM_MAX_TOKENS
                     },
                     timeout=120
                 )
