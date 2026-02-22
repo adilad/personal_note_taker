@@ -1,11 +1,8 @@
 """Tests for all API endpoints — auth, pagination, SSE."""
 from __future__ import annotations
 
-import datetime
 import json
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 
 # ---- Auth tests --------------------------------------------------------
@@ -22,7 +19,6 @@ def test_segments_requires_auth():
     """Segments endpoint returns 401 without key when key is configured."""
     from recorder.api.app import create_app
     from recorder.pipeline.processor import RecorderPipeline
-    import os
 
     # Temporarily set an API key via env
     with patch("recorder.config.settings") as mock_settings:
@@ -51,7 +47,6 @@ def test_segments_with_valid_key(test_client):
 
 def test_segments_with_bearer_token():
     """Bearer token auth should work."""
-    import os
     from recorder.api.app import create_app
     from recorder.pipeline.processor import RecorderPipeline
 

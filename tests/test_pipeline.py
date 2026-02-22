@@ -1,7 +1,6 @@
 """Tests for pipeline — bounded queue backpressure, deduplication."""
 from __future__ import annotations
 
-import queue
 import threading
 from unittest.mock import MagicMock, patch
 

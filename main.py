@@ -14,7 +14,6 @@ import argparse
 import logging
 import os
 import socket
-import sys
 
 from recorder.config import settings
 from recorder.logging_config import configure_logging
@@ -33,8 +32,8 @@ def _warn_if_no_api_key() -> None:
 
 
 def _run_migrations() -> None:
-    from alembic.config import Config
     from alembic import command
+    from alembic.config import Config
 
     migrations_dir = os.path.join(os.path.dirname(__file__), "migrations")
     cfg = Config()
@@ -46,8 +45,8 @@ def _run_migrations() -> None:
 
 def _ensure_schema() -> None:
     """Create tables if they don't exist (quick path — no Alembic required)."""
-    from recorder.db.session import Base, engine
     import recorder.db.models  # noqa: F401
+    from recorder.db.session import Base, engine
 
     Base.metadata.create_all(engine)
 
@@ -94,8 +93,8 @@ def main() -> None:
         return
 
     if args.backfill_embeddings:
-        from recorder.embeddings.backfill import backfill_embeddings
         from recorder.db.session import SessionLocal
+        from recorder.embeddings.backfill import backfill_embeddings
 
         _ensure_schema()
         db = SessionLocal()

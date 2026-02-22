@@ -40,7 +40,7 @@ def test_analyze_transcript_no_llm():
     with patch("recorder.llm.client.settings") as mock_settings:
         mock_settings.use_litellm = False
         mock_settings.litellm_api_key = ""
-        from recorder.llm.client import analyze_transcript, _get_local_llm
+        from recorder.llm.client import analyze_transcript
         with patch("recorder.llm.client._get_local_llm", return_value=None):
             result = analyze_transcript("Hello world. Testing the fallback.")
             assert isinstance(result.summary, str)

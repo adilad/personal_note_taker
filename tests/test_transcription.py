@@ -66,6 +66,7 @@ def test_transcribe_local_returns_tuple(sample_wav):
         mock_s.whisper_beam_size = 5
 
         import numpy as np
+
         from recorder.transcription.whisper_asr import transcribe_local
 
         audio = np.zeros(16000, dtype=np.float32)

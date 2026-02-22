@@ -9,8 +9,8 @@ import pytest
 @pytest.fixture
 def repo_db(tmp_path):
     """Isolated in-memory DB with full schema."""
-    from recorder.db.session import Base, make_engine, sessionmaker
     import recorder.db.models  # noqa: F401
+    from recorder.db.session import Base, make_engine, sessionmaker
 
     engine = make_engine(str(tmp_path / "test.db"))
     Base.metadata.create_all(engine)
