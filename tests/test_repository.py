@@ -1,4 +1,5 @@
 """Tests for SegmentRepository CRUD, search, and soft delete."""
+
 from __future__ import annotations
 
 import datetime

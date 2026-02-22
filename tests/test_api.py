@@ -1,10 +1,12 @@
 """Tests for all API endpoints — auth, pagination, SSE."""
+
 from __future__ import annotations
 
 import json
 from unittest.mock import MagicMock, patch
 
 # ---- Auth tests --------------------------------------------------------
+
 
 def test_health_no_auth(test_client):
     """Health endpoint is exempt from auth."""
@@ -69,6 +71,7 @@ def test_segments_with_bearer_token():
 
 # ---- Segment endpoints --------------------------------------------------
 
+
 def test_get_segments_today(test_client):
     resp = test_client.get("/api/v1/segments")
     assert resp.status_code == 200
@@ -105,6 +108,7 @@ def test_patch_segment_invalid_tags(test_client):
 
 # ---- Recording control --------------------------------------------------
 
+
 def test_start_recording(test_client):
     resp = test_client.post("/api/v1/recordings/start")
     assert resp.status_code == 200
@@ -133,13 +137,18 @@ def test_live_transcript(test_client):
 
 # ---- Summaries ----------------------------------------------------------
 
+
 def test_daily_summary(test_client):
-    with patch("recorder.api.routes.summaries.summarize_daily", return_value="Test summary"), \
-         patch("recorder.api.routes.summaries.SegmentRepository") as mock_repo_cls, \
-         patch("recorder.api.routes.summaries.DailyDigestRepository") as mock_daily_cls:
+    with (
+        patch("recorder.api.routes.summaries.summarize_daily", return_value="Test summary"),
+        patch("recorder.api.routes.summaries.SegmentRepository") as mock_repo_cls,
+        patch("recorder.api.routes.summaries.DailyDigestRepository") as mock_daily_cls,
+    ):
         mock_repo_cls.return_value.list_for_date.return_value = []
         mock_daily_cls.return_value.get_by_date.return_value = None
-        mock_daily_cls.return_value.upsert.return_value = MagicMock(summary="Test summary", action_items="")
+        mock_daily_cls.return_value.upsert.return_value = MagicMock(
+            summary="Test summary", action_items=""
+        )
         resp = test_client.get("/api/v1/summaries/daily")
         assert resp.status_code == 200
         data = resp.get_json()
@@ -154,6 +163,7 @@ def test_hourly_summaries(test_client):
 
 
 # ---- Export -------------------------------------------------------------
+
 
 def test_export_json(test_client):
     resp = test_client.get("/api/v1/export?format=json")
@@ -178,6 +188,7 @@ def test_export_unknown_format(test_client):
 
 
 # ---- Health / Metrics ---------------------------------------------------
+
 
 def test_metrics_endpoint(test_client):
     resp = test_client.get("/metrics")

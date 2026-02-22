@@ -1,4 +1,5 @@
 """Request middleware: API key auth and request ID injection (Phase 2 & 3)."""
+
 from __future__ import annotations
 
 import logging

@@ -1,4 +1,5 @@
 """Repository pattern — all SQL lives here, no raw SQL in routes or pipeline."""
+
 import datetime
 import logging
 import struct
@@ -42,9 +43,7 @@ class SegmentRepository:
         """Deduplication check — avoid reprocessing the same file."""
         return (
             self.db.query(Segment.id)
-            .filter(
-                or_(Segment.audio_key == audio_key, Segment.audio_path == audio_key)
-            )
+            .filter(or_(Segment.audio_key == audio_key, Segment.audio_path == audio_key))
             .first()
             is not None
         )
@@ -121,12 +120,7 @@ class SegmentRepository:
         if tag:
             query = query.filter(Segment.tags.like(f'%"{tag}"%'))
 
-        return (
-            query.order_by(Segment.start_ts.desc())
-            .limit(limit)
-            .offset(offset)
-            .all()
-        )
+        return query.order_by(Segment.start_ts.desc()).limit(limit).offset(offset).all()
 
     def list_for_date(self, date_str: str) -> list[Segment]:
         start = f"{date_str}T00:00:00"
@@ -224,9 +218,7 @@ class SegmentEmbeddingRepository:
         ids = np.array([r[0] for r in rows], dtype=np.int64)
         raw = b"".join(r[1] for r in rows)
         # ascontiguousarray avoids numpy 2.x warnings on non-contiguous read-only buffers
-        mat = np.ascontiguousarray(
-            np.frombuffer(raw, dtype=np.float32).reshape(len(rows), -1)
-        )
+        mat = np.ascontiguousarray(np.frombuffer(raw, dtype=np.float32).reshape(len(rows), -1))
         query = np.ascontiguousarray(np.array(query_embedding, dtype=np.float32))
         # Both query and stored embeddings are L2-normalised, so dot == cosine sim.
         scores = np.dot(mat, query)  # (n,)
@@ -246,23 +238,15 @@ class HourlyDigestRepository:
         self.db = db
 
     def get_by_hour(self, hour_start: str) -> HourlyDigest | None:
-        return (
-            self.db.query(HourlyDigest)
-            .filter(HourlyDigest.hour_start == hour_start)
-            .first()
-        )
+        return self.db.query(HourlyDigest).filter(HourlyDigest.hour_start == hour_start).first()
 
-    def upsert(
-        self, hour_start: str, hour_end: str, summary: str
-    ) -> HourlyDigest:
+    def upsert(self, hour_start: str, hour_end: str, summary: str) -> HourlyDigest:
         existing = self.get_by_hour(hour_start)
         if existing:
             existing.hour_end = hour_end  # type: ignore[assignment]
             existing.summary = summary  # type: ignore[assignment]
         else:
-            existing = HourlyDigest(
-                hour_start=hour_start, hour_end=hour_end, summary=summary
-            )
+            existing = HourlyDigest(hour_start=hour_start, hour_end=hour_end, summary=summary)
             self.db.add(existing)
         self.db.commit()
         self.db.refresh(existing)
@@ -270,10 +254,7 @@ class HourlyDigestRepository:
 
     def list_recent(self, limit: int = 24) -> list[HourlyDigest]:
         return (
-            self.db.query(HourlyDigest)
-            .order_by(HourlyDigest.hour_start.desc())
-            .limit(limit)
-            .all()
+            self.db.query(HourlyDigest).order_by(HourlyDigest.hour_start.desc()).limit(limit).all()
         )
 
 
@@ -282,36 +263,23 @@ class DailyDigestRepository:
         self.db = db
 
     def get_by_date(self, date_str: str) -> DailyDigest | None:
-        return (
-            self.db.query(DailyDigest)
-            .filter(DailyDigest.date == date_str)
-            .first()
-        )
+        return self.db.query(DailyDigest).filter(DailyDigest.date == date_str).first()
 
-    def upsert(
-        self, date_str: str, summary: str, action_items: str = ""
-    ) -> DailyDigest:
+    def upsert(self, date_str: str, summary: str, action_items: str = "") -> DailyDigest:
         existing = self.get_by_date(date_str)
         if existing:
             existing.summary = summary  # type: ignore[assignment]
             existing.action_items = action_items  # type: ignore[assignment]
             existing.updated_at = datetime.datetime.now()  # type: ignore[assignment]
         else:
-            existing = DailyDigest(
-                date=date_str, summary=summary, action_items=action_items
-            )
+            existing = DailyDigest(date=date_str, summary=summary, action_items=action_items)
             self.db.add(existing)
         self.db.commit()
         self.db.refresh(existing)
         return existing
 
     def list_recent(self, limit: int = 30) -> list[DailyDigest]:
-        return (
-            self.db.query(DailyDigest)
-            .order_by(DailyDigest.date.desc())
-            .limit(limit)
-            .all()
-        )
+        return self.db.query(DailyDigest).order_by(DailyDigest.date.desc()).limit(limit).all()
 
 
 class FailedSegmentRepository:
@@ -326,11 +294,7 @@ class FailedSegmentRepository:
         return fs
 
     def increment_attempts(self, failed_id: int) -> None:
-        fs = (
-            self.db.query(FailedSegment)
-            .filter(FailedSegment.id == failed_id)
-            .first()
-        )
+        fs = self.db.query(FailedSegment).filter(FailedSegment.id == failed_id).first()
         if fs:
             fs.attempts += 1  # type: ignore[assignment]
             fs.updated_at = datetime.datetime.now()  # type: ignore[assignment]

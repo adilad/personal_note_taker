@@ -1,4 +1,5 @@
 """Health and metrics endpoints."""
+
 from __future__ import annotations
 
 from flask import Blueprint, Response, jsonify
@@ -13,11 +14,14 @@ bp = Blueprint("health", __name__)
 @inject_request_id
 def health():
     from recorder.config import settings
-    return jsonify({
-        "ok": True,
-        "version": "2.0.0",
-        "auth_required": bool(settings.recorder_api_key),
-    })
+
+    return jsonify(
+        {
+            "ok": True,
+            "version": "2.0.0",
+            "auth_required": bool(settings.recorder_api_key),
+        }
+    )
 
 
 @bp.get("/metrics")

@@ -1,4 +1,5 @@
 """Tests for pipeline — bounded queue backpressure, deduplication."""
+
 from __future__ import annotations
 
 import threading
@@ -9,10 +10,12 @@ def test_pipeline_start_stop():
     """Pipeline can start and stop cleanly."""
     from recorder.pipeline.processor import RecorderPipeline
 
-    with patch("recorder.pipeline.processor.record_loop"), \
-         patch("recorder.pipeline.processor.segmenter_loop"), \
-         patch("recorder.pipeline.processor.hourly_worker"), \
-         patch("recorder.pipeline.processor.get_model", return_value=MagicMock()):
+    with (
+        patch("recorder.pipeline.processor.record_loop"),
+        patch("recorder.pipeline.processor.segmenter_loop"),
+        patch("recorder.pipeline.processor.hourly_worker"),
+        patch("recorder.pipeline.processor.get_model", return_value=MagicMock()),
+    ):
         p = RecorderPipeline()
         assert p.start() is True
         assert p.start() is False  # already running

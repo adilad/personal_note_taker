@@ -1,4 +1,5 @@
 """Recording control endpoints and reprocess."""
+
 from __future__ import annotations
 
 import datetime
@@ -27,6 +28,7 @@ def start_recording():
     status = pipeline.status()
 
     from recorder.api.sse import event_bus
+
     event_bus.publish("recording.started", {"running": True})
 
     logger.info("recording.started", extra={"started": started})
@@ -42,6 +44,7 @@ def stop_recording():
     status = pipeline.status()
 
     from recorder.api.sse import event_bus
+
     event_bus.publish("recording.stopped", {"running": False})
 
     logger.info("recording.stopped", extra={"stopped": stopped})
@@ -62,11 +65,13 @@ def recording_status():
 def live_transcript():
     pipeline = _get_pipeline()
     status = pipeline.status()
-    return jsonify({
-        "ok": True,
-        "transcript": status["live_transcript"],
-        "running": status["running"],
-    })
+    return jsonify(
+        {
+            "ok": True,
+            "transcript": status["live_transcript"],
+            "running": status["running"],
+        }
+    )
 
 
 @bp.post("/api/v1/recordings/reprocess")
@@ -93,9 +98,7 @@ def reprocess():
             try:
                 ts_part = fname.replace("seg_", "").replace(".wav", "")
                 date_part, time_part = ts_part.split("T")
-                ts = datetime.datetime.fromisoformat(
-                    f"{date_part}T{time_part.replace('-', ':')}"
-                )
+                ts = datetime.datetime.fromisoformat(f"{date_part}T{time_part.replace('-', ':')}")
             except Exception:
                 ts = datetime.datetime.now()
             duration = os.path.getsize(abs_path) / 2 / settings.sample_rate

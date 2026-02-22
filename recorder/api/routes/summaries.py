@@ -1,4 +1,5 @@
 """Summary endpoints — daily and hourly digests."""
+
 from __future__ import annotations
 
 import datetime
@@ -20,21 +21,21 @@ bp = Blueprint("summaries", __name__)
 @require_api_key
 def get_daily_summary():
     """Return cached daily digest (generate on the fly if not cached)."""
-    date_str = request.args.get(
-        "date", datetime.datetime.now().strftime("%Y-%m-%d")
-    )
+    date_str = request.args.get("date", datetime.datetime.now().strftime("%Y-%m-%d"))
     db = SessionLocal()
     try:
         daily_repo = DailyDigestRepository(db)
         existing = daily_repo.get_by_date(date_str)
         if existing and existing.summary:
-            return jsonify({
-                "ok": True,
-                "date": date_str,
-                "summary": existing.summary,
-                "action_items": existing.action_items or "",
-                "cached": True,
-            })
+            return jsonify(
+                {
+                    "ok": True,
+                    "date": date_str,
+                    "summary": existing.summary,
+                    "action_items": existing.action_items or "",
+                    "cached": True,
+                }
+            )
 
         # Generate on the fly
         seg_repo = SegmentRepository(db)
@@ -52,20 +53,20 @@ def get_daily_summary():
         all_actions = []
         for s in segs:
             if s.action_items:
-                all_actions.extend(
-                    [x.strip() for x in s.action_items.split("\n") if x.strip()]
-                )
+                all_actions.extend([x.strip() for x in s.action_items.split("\n") if x.strip()])
         action_text = "\n".join(all_actions)
 
         daily_repo.upsert(date_str, summary, action_text)
 
-        return jsonify({
-            "ok": True,
-            "date": date_str,
-            "summary": summary,
-            "action_items": action_text,
-            "cached": False,
-        })
+        return jsonify(
+            {
+                "ok": True,
+                "date": date_str,
+                "summary": summary,
+                "action_items": action_text,
+                "cached": False,
+            }
+        )
     except Exception as exc:
         logger.error("summaries.daily_error", extra={"error": str(exc)})
         return jsonify({"ok": False, "error": str(exc)}), 500
@@ -83,14 +84,17 @@ def generate_daily_summary():
     db = SessionLocal()
     try:
         from recorder.pipeline.hourly import run_daily_digest
+
         run_daily_digest(db, date_str)
         daily_repo = DailyDigestRepository(db)
         digest = daily_repo.get_by_date(date_str)
-        return jsonify({
-            "ok": True,
-            "date": date_str,
-            "summary": digest.summary if digest else "",
-        })
+        return jsonify(
+            {
+                "ok": True,
+                "date": date_str,
+                "summary": digest.summary if digest else "",
+            }
+        )
     except Exception as exc:
         logger.error("summaries.generate_error", extra={"error": str(exc)})
         return jsonify({"ok": False, "error": str(exc)}), 500
@@ -129,14 +133,16 @@ def get_range_summary():
         segs = seg_repo.list(start=start_iso, end=end_iso, limit=5000)
 
         if not segs:
-            return jsonify({
-                "ok": True,
-                "start": start_date,
-                "end": end_date,
-                "segment_count": 0,
-                "summary": "(no transcripts found in this date range)",
-                "action_items": "",
-            })
+            return jsonify(
+                {
+                    "ok": True,
+                    "start": start_date,
+                    "end": end_date,
+                    "segment_count": 0,
+                    "summary": "(no transcripts found in this date range)",
+                    "action_items": "",
+                }
+            )
 
         texts = []
         for s in segs:
@@ -151,19 +157,19 @@ def get_range_summary():
         all_actions = []
         for s in segs:
             if s.action_items:
-                all_actions.extend(
-                    [x.strip() for x in s.action_items.split("\n") if x.strip()]
-                )
+                all_actions.extend([x.strip() for x in s.action_items.split("\n") if x.strip()])
         action_text = "\n".join(all_actions)
 
-        return jsonify({
-            "ok": True,
-            "start": start_date,
-            "end": end_date,
-            "segment_count": len(segs),
-            "summary": summary,
-            "action_items": action_text,
-        })
+        return jsonify(
+            {
+                "ok": True,
+                "start": start_date,
+                "end": end_date,
+                "segment_count": len(segs),
+                "summary": summary,
+                "action_items": action_text,
+            }
+        )
     except Exception as exc:
         logger.error("summaries.range_error", extra={"error": str(exc)})
         return jsonify({"ok": False, "error": str(exc)}), 500
@@ -181,16 +187,18 @@ def get_hourly_summaries():
     try:
         repo = HourlyDigestRepository(db)
         digests = repo.list_recent(limit=limit)
-        return jsonify({
-            "ok": True,
-            "digests": [
-                {
-                    "hour_start": d.hour_start,
-                    "hour_end": d.hour_end,
-                    "summary": d.summary or "",
-                }
-                for d in digests
-            ],
-        })
+        return jsonify(
+            {
+                "ok": True,
+                "digests": [
+                    {
+                        "hour_start": d.hour_start,
+                        "hour_end": d.hour_end,
+                        "summary": d.summary or "",
+                    }
+                    for d in digests
+                ],
+            }
+        )
     finally:
         db.close()

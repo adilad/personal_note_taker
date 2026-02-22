@@ -1,4 +1,5 @@
 """LiteLLM cloud transcription (Whisper API)."""
+
 from __future__ import annotations
 
 import logging

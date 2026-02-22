@@ -1,4 +1,5 @@
 """Hourly digest worker — runs in background, generates hour summaries."""
+
 from __future__ import annotations
 
 import datetime
@@ -121,9 +122,9 @@ def hourly_worker(stop_flag) -> None:
             # Daily digest at midnight (once per day)
             today = datetime.datetime.now().strftime("%Y-%m-%d")
             if today != last_daily_date and datetime.datetime.now().hour == 0:
-                yesterday = (
-                    datetime.datetime.now() - datetime.timedelta(days=1)
-                ).strftime("%Y-%m-%d")
+                yesterday = (datetime.datetime.now() - datetime.timedelta(days=1)).strftime(
+                    "%Y-%m-%d"
+                )
                 try:
                     run_daily_digest(db, yesterday)
                     last_daily_date = today

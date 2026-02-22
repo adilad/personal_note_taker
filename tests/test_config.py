@@ -1,4 +1,5 @@
 """Tests for config loading and env var overrides."""
+
 from __future__ import annotations
 
 

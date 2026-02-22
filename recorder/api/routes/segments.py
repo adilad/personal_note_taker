@@ -1,4 +1,5 @@
 """Segments endpoints — list, detail, patch (tags/important)."""
+
 from __future__ import annotations
 
 import datetime
@@ -16,9 +17,7 @@ bp = Blueprint("segments", __name__)
 
 
 def _today_iso() -> str:
-    return datetime.datetime.now().replace(
-        hour=0, minute=0, second=0, microsecond=0
-    ).isoformat()
+    return datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
 
 
 @bp.get("/api/v1/segments")
@@ -98,6 +97,7 @@ def patch_segment(segment_id: int):
             return jsonify({"ok": False, "error": "not found"}), 404
 
         from recorder.api.sse import event_bus
+
         event_bus.publish("segment.updated", seg.to_dict())
 
         return jsonify({"ok": True, "segment": seg.to_dict()})

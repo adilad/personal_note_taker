@@ -1,4 +1,5 @@
 """LLM client — single analyze_transcript() call per segment (Phase 6)."""
+
 from __future__ import annotations
 
 import json
@@ -131,17 +132,13 @@ def _simple_summarize(text: str, max_sentences: int = 4) -> str:
     for _, _, s in scores:
         if len(chosen) >= max_sentences:
             break
-        if any(
-            s.lower()[:40] in c.lower() or c.lower()[:40] in s.lower() for c in chosen
-        ):
+        if any(s.lower()[:40] in c.lower() or c.lower()[:40] in s.lower() for c in chosen):
             continue
         chosen.append(s)
     return ". ".join(chosen) + ("." if chosen else "")
 
 
-def analyze_transcript(
-    transcript: str, diarized_text: str = ""
-) -> AnalysisResult:
+def analyze_transcript(transcript: str, diarized_text: str = "") -> AnalysisResult:
     """
     Single LLM call that returns all analysis for a segment.
     Falls back gracefully on JSON parse errors.
@@ -153,9 +150,7 @@ def analyze_transcript(
     if diarized_text:
         diarized_section = DIARIZED_SECTION.format(diarized_text=diarized_text)
 
-    prompt = ANALYSIS_PROMPT.format(
-        transcript=transcript, diarized_section=diarized_section
-    )
+    prompt = ANALYSIS_PROMPT.format(transcript=transcript, diarized_section=diarized_section)
 
     raw = ""
     if settings.use_litellm:

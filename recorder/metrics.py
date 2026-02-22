@@ -1,4 +1,5 @@
 """Prometheus metrics definitions (no-op stubs if prometheus_client not installed)."""
+
 from __future__ import annotations
 
 

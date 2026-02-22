@@ -1,4 +1,5 @@
 """Flask application factory — registers all blueprints."""
+
 from __future__ import annotations
 
 import logging
@@ -58,6 +59,7 @@ def create_app(pipeline=None) -> Flask:
     @app.get("/api/health")
     def legacy_health():
         from flask import jsonify
+
         pipeline_inst = app.config.get("pipeline")
         running = pipeline_inst.status()["running"] if pipeline_inst else False
         return jsonify({"ok": True, "running": running})
@@ -65,32 +67,41 @@ def create_app(pipeline=None) -> Flask:
     @app.get("/api/live")
     def legacy_live():
         from flask import jsonify
+
         pipeline_inst = app.config.get("pipeline")
         if pipeline_inst:
             status = pipeline_inst.status()
-            return jsonify({
-                "ok": True,
-                "transcript": status["live_transcript"],
-                "running": status["running"],
-            })
+            return jsonify(
+                {
+                    "ok": True,
+                    "transcript": status["live_transcript"],
+                    "running": status["running"],
+                }
+            )
         return jsonify({"ok": True, "transcript": "", "running": False})
 
     @app.post("/api/start")
     def legacy_start():
         from flask import jsonify
+
         pipeline_inst = app.config.get("pipeline")
         if pipeline_inst:
             started = pipeline_inst.start()
-            return jsonify({"ok": True, "running": pipeline_inst.status()["running"], "started": started})
+            return jsonify(
+                {"ok": True, "running": pipeline_inst.status()["running"], "started": started}
+            )
         return jsonify({"ok": False, "error": "no pipeline"}), 500
 
     @app.post("/api/stop")
     def legacy_stop():
         from flask import jsonify
+
         pipeline_inst = app.config.get("pipeline")
         if pipeline_inst:
             stopped = pipeline_inst.stop()
-            return jsonify({"ok": True, "running": pipeline_inst.status()["running"], "stopped": stopped})
+            return jsonify(
+                {"ok": True, "running": pipeline_inst.status()["running"], "stopped": stopped}
+            )
         return jsonify({"ok": False, "error": "no pipeline"}), 500
 
     @app.get("/api/segments")
@@ -101,12 +112,15 @@ def create_app(pipeline=None) -> Flask:
 
         from recorder.db.repository import SegmentRepository
         from recorder.db.session import SessionLocal
+
         db = SessionLocal()
         try:
             repo = SegmentRepository(db)
-            start_of_day = datetime.datetime.now().replace(
-                hour=0, minute=0, second=0, microsecond=0
-            ).isoformat()
+            start_of_day = (
+                datetime.datetime.now()
+                .replace(hour=0, minute=0, second=0, microsecond=0)
+                .isoformat()
+            )
             segs = repo.list(start=start_of_day, limit=200)
             return jsonify({"ok": True, "segments": [s.to_dict() for s in segs]})
         finally:
@@ -121,6 +135,7 @@ def create_app(pipeline=None) -> Flask:
         from recorder.db.repository import SegmentRepository
         from recorder.db.session import SessionLocal
         from recorder.llm.client import summarize_daily
+
         db = SessionLocal()
         try:
             date_str = datetime.datetime.now().strftime("%Y-%m-%d")
@@ -148,6 +163,7 @@ def create_app(pipeline=None) -> Flask:
         from recorder.config import settings
         from recorder.db.repository import SegmentRepository
         from recorder.db.session import SessionLocal
+
         pipeline_inst = app.config.get("pipeline")
         if not pipeline_inst:
             return jsonify({"ok": False, "error": "no pipeline"}), 500
@@ -165,7 +181,9 @@ def create_app(pipeline=None) -> Flask:
                 try:
                     ts_part = fname.replace("seg_", "").replace(".wav", "")
                     date_part, time_part = ts_part.split("T")
-                    ts = datetime.datetime.fromisoformat(f"{date_part}T{time_part.replace('-', ':')}")
+                    ts = datetime.datetime.fromisoformat(
+                        f"{date_part}T{time_part.replace('-', ':')}"
+                    )
                 except Exception:
                     ts = datetime.datetime.now()
                 duration = os.path.getsize(abs_path) / 2 / settings.sample_rate

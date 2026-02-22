@@ -1,4 +1,5 @@
 """Local Whisper ASR via faster-whisper."""
+
 from __future__ import annotations
 
 import logging
@@ -22,9 +23,7 @@ def get_model():
             "whisper.loading",
             extra={"model_size": settings.whisper_model},
         )
-        _model = WhisperModel(
-            settings.whisper_model, device="auto", compute_type="int8"
-        )
+        _model = WhisperModel(settings.whisper_model, device="auto", compute_type="int8")
         logger.info("whisper.ready")
     return _model
 

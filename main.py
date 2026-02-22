@@ -8,6 +8,7 @@ Usage:
     python main.py --migrate               # run DB migrations then exit
     python main.py --backfill-embeddings   # embed existing segments, then exit
 """
+
 from __future__ import annotations
 
 import argparse
@@ -109,9 +110,11 @@ def main() -> None:
 
     if args.only_hourly:
         import threading
+
         stop_flag = threading.Event()
         logger.info("mode.hourly_only")
         from recorder.pipeline.hourly import hourly_worker
+
         try:
             hourly_worker(stop_flag)
         except KeyboardInterrupt:
@@ -127,6 +130,7 @@ def main() -> None:
 
         # Also wire event_bus to pipeline so SSE gets events
         from recorder.api.sse import event_bus
+
         pipeline.event_bus = event_bus
 
         app = create_app(pipeline=pipeline)
@@ -168,6 +172,7 @@ def main() -> None:
     pipeline.start()
     try:
         import time
+
         while True:
             time.sleep(0.5)
     except KeyboardInterrupt:

@@ -1,4 +1,5 @@
 """Tests for transcription — local Whisper mock, cloud fallback."""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
@@ -23,8 +24,10 @@ def test_transcribe_cloud_success(tmp_path, sample_wav):
     mock_response.json.return_value = {"text": "Hello from cloud"}
 
     # requests is imported lazily inside the function, so patch at the requests module level
-    with patch("recorder.transcription.cloud.settings") as mock_s, \
-         patch("requests.post", return_value=mock_response):
+    with (
+        patch("recorder.transcription.cloud.settings") as mock_s,
+        patch("requests.post", return_value=mock_response),
+    ):
         mock_s.use_litellm_transcription = True
         mock_s.litellm_api_key = "sk-test"
         mock_s.litellm_base_url = "https://api.test"
@@ -41,8 +44,10 @@ def test_transcribe_cloud_failure_returns_none(sample_wav):
     mock_response = MagicMock()
     mock_response.status_code = 503
 
-    with patch("recorder.transcription.cloud.settings") as mock_s, \
-         patch("requests.post", return_value=mock_response):
+    with (
+        patch("recorder.transcription.cloud.settings") as mock_s,
+        patch("requests.post", return_value=mock_response),
+    ):
         mock_s.use_litellm_transcription = True
         mock_s.litellm_api_key = "sk-test"
         mock_s.litellm_base_url = "https://api.test"
@@ -61,8 +66,10 @@ def test_transcribe_local_returns_tuple(sample_wav):
     mock_seg.text = " hello "
     mock_model.transcribe.return_value = ([mock_seg], MagicMock())
 
-    with patch("recorder.transcription.whisper_asr._model", mock_model), \
-         patch("recorder.transcription.whisper_asr.settings") as mock_s:
+    with (
+        patch("recorder.transcription.whisper_asr._model", mock_model),
+        patch("recorder.transcription.whisper_asr.settings") as mock_s,
+    ):
         mock_s.whisper_beam_size = 5
 
         import numpy as np

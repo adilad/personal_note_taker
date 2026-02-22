@@ -1,4 +1,5 @@
 """Tests for LLM client — analyze_transcript(), JSON parsing, fallback."""
+
 from __future__ import annotations
 
 import json
@@ -41,6 +42,7 @@ def test_analyze_transcript_no_llm():
         mock_settings.use_litellm = False
         mock_settings.litellm_api_key = ""
         from recorder.llm.client import analyze_transcript
+
         with patch("recorder.llm.client._get_local_llm", return_value=None):
             result = analyze_transcript("Hello world. Testing the fallback.")
             assert isinstance(result.summary, str)
@@ -48,18 +50,22 @@ def test_analyze_transcript_no_llm():
 
 def test_analyze_parses_list_fields():
     """Ensure list fields are correctly parsed from JSON arrays."""
-    response = json.dumps({
-        "summary": "Summary",
-        "speakers": "[Alice] Hello",
-        "participants": ["Alice", "Bob"],
-        "category": "meeting",
-        "action_items": ["[ ] Alice: Do thing"],
-        "open_questions": ["When is the deadline?"],
-        "sentiment": "positive",
-        "keywords": ["test", "meeting", "deadline"],
-    })
-    with patch("recorder.llm.client.settings") as mock_settings, \
-         patch("recorder.llm.client._call_litellm", return_value=response):
+    response = json.dumps(
+        {
+            "summary": "Summary",
+            "speakers": "[Alice] Hello",
+            "participants": ["Alice", "Bob"],
+            "category": "meeting",
+            "action_items": ["[ ] Alice: Do thing"],
+            "open_questions": ["When is the deadline?"],
+            "sentiment": "positive",
+            "keywords": ["test", "meeting", "deadline"],
+        }
+    )
+    with (
+        patch("recorder.llm.client.settings") as mock_settings,
+        patch("recorder.llm.client._call_litellm", return_value=response),
+    ):
         mock_settings.use_litellm = True
         mock_settings.model_max_tokens = 500
         from recorder.llm.client import analyze_transcript

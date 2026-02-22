@@ -1,4 +1,5 @@
 """Export endpoint — JSON, Markdown, CSV (Phase 10)."""
+
 from __future__ import annotations
 
 import csv
@@ -18,9 +19,7 @@ bp = Blueprint("export", __name__)
 
 
 def _default_start() -> str:
-    return datetime.datetime.now().replace(
-        hour=0, minute=0, second=0, microsecond=0
-    ).isoformat()
+    return datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
 
 
 @bp.get("/api/v1/export")
@@ -44,7 +43,10 @@ def export_segments():
 
         if fmt == "json":
             data = json.dumps(
-                {"segments": [s.to_dict() for s in segs], "exported_at": datetime.datetime.now().isoformat()},
+                {
+                    "segments": [s.to_dict() for s in segs],
+                    "exported_at": datetime.datetime.now().isoformat(),
+                },
                 indent=2,
             )
             return Response(
@@ -76,19 +78,39 @@ def export_segments():
         elif fmt == "csv":
             output = io.StringIO()
             writer = csv.writer(output)
-            writer.writerow([
-                "id", "start_ts", "end_ts", "duration_sec",
-                "transcript", "summary", "keywords",
-                "category", "sentiment", "participants",
-                "action_items", "questions",
-            ])
+            writer.writerow(
+                [
+                    "id",
+                    "start_ts",
+                    "end_ts",
+                    "duration_sec",
+                    "transcript",
+                    "summary",
+                    "keywords",
+                    "category",
+                    "sentiment",
+                    "participants",
+                    "action_items",
+                    "questions",
+                ]
+            )
             for s in segs:
-                writer.writerow([
-                    s.id, s.start_ts, s.end_ts, s.duration_sec,
-                    s.transcript, s.summary, s.keywords,
-                    s.category, s.sentiment, s.participants,
-                    s.action_items, s.questions,
-                ])
+                writer.writerow(
+                    [
+                        s.id,
+                        s.start_ts,
+                        s.end_ts,
+                        s.duration_sec,
+                        s.transcript,
+                        s.summary,
+                        s.keywords,
+                        s.category,
+                        s.sentiment,
+                        s.participants,
+                        s.action_items,
+                        s.questions,
+                    ]
+                )
             return Response(
                 output.getvalue(),
                 mimetype="text/csv",

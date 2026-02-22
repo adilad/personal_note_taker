@@ -1,4 +1,5 @@
 """Central configuration — single source of truth for all env vars."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -50,7 +51,9 @@ class Settings(BaseSettings):
     # --- Embeddings (semantic search) ---
     use_embeddings: bool = True
     embedding_model: str = "all-MiniLM-L6-v2"
-    embedding_dim: int = 384  # must match model output; changing requires re-creating segment_embeddings
+    embedding_dim: int = (
+        384  # must match model output; changing requires re-creating segment_embeddings
+    )
 
     # --- Noise reduction ---
     use_noisereduce: bool = True

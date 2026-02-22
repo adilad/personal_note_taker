@@ -1,4 +1,5 @@
 """Audio file streaming endpoint (Phase 7)."""
+
 from __future__ import annotations
 
 import logging
@@ -26,6 +27,7 @@ def stream_audio(segment_id: int):
         seg = repo.get_by_id(segment_id)
         if not seg:
             from flask import jsonify
+
             return jsonify({"ok": False, "error": "not found"}), 404
 
         # Try audio_key first, fall back to audio_path
@@ -35,11 +37,13 @@ def stream_audio(segment_id: int):
         if path is None or not path.exists():
             # Fall back to absolute audio_path
             import pathlib
+
             fallback = pathlib.Path(seg.audio_path) if seg.audio_path else None
             if fallback and fallback.exists():
                 path = fallback
             else:
                 from flask import jsonify
+
                 return jsonify({"ok": False, "error": "audio file not found"}), 404
 
         mime_type, _ = mimetypes.guess_type(str(path))

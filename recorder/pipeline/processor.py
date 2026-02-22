@@ -8,6 +8,7 @@ Phase 5 features:
 - Segment deduplication by audio_key
 - Pipeline class with start() / stop() / status()
 """
+
 from __future__ import annotations
 
 import logging
@@ -31,57 +32,60 @@ MAX_RETRIES = 3
 SHUTDOWN_DRAIN_TIMEOUT = 60  # seconds
 
 # Minimum real speech to bother persisting
-MIN_SEGMENT_DURATION_SEC = 2.0   # shorter segments are almost certainly noise
-MIN_WORD_COUNT = 3                # "Thank you." = 2 words → dropped
+MIN_SEGMENT_DURATION_SEC = 2.0  # shorter segments are almost certainly noise
+MIN_WORD_COUNT = 3  # "Thank you." = 2 words → dropped
 
 # Whisper reliably hallucinates these phrases on silent/noisy audio.
 # Normalised to lowercase, stripped of punctuation for comparison.
-_HALLUCINATIONS: frozenset[str] = frozenset({
-    "thank you",
-    "thanks",
-    "thank you so much",
-    "thank you very much",
-    "thanks for watching",
-    "thank you for watching",
-    "thanks for listening",
-    "thank you for listening",
-    "you",
-    "bye",
-    "goodbye",
-    "see you next time",
-    "see you later",
-    "take care",
-    "have a good day",
-    "have a great day",
-    "good night",
-    "good morning",
-    "good afternoon",
-    "good evening",
-    "hello",
-    "hi",
-    "hey",
-    "okay",
-    "ok",
-    "yes",
-    "no",
-    "um",
-    "uh",
-    "hmm",
-    "music",
-    "applause",
-    "laughter",
-    "silence",
-    "inaudible",
-    "foreign",
-    "subtitles by",
-    "subscribe",
-    "like and subscribe",
-})
+_HALLUCINATIONS: frozenset[str] = frozenset(
+    {
+        "thank you",
+        "thanks",
+        "thank you so much",
+        "thank you very much",
+        "thanks for watching",
+        "thank you for watching",
+        "thanks for listening",
+        "thank you for listening",
+        "you",
+        "bye",
+        "goodbye",
+        "see you next time",
+        "see you later",
+        "take care",
+        "have a good day",
+        "have a great day",
+        "good night",
+        "good morning",
+        "good afternoon",
+        "good evening",
+        "hello",
+        "hi",
+        "hey",
+        "okay",
+        "ok",
+        "yes",
+        "no",
+        "um",
+        "uh",
+        "hmm",
+        "music",
+        "applause",
+        "laughter",
+        "silence",
+        "inaudible",
+        "foreign",
+        "subtitles by",
+        "subscribe",
+        "like and subscribe",
+    }
+)
 
 
 def _is_hallucination(text: str) -> bool:
     """Return True if the transcript looks like a Whisper hallucination."""
     import re
+
     normalised = re.sub(r"[^\w\s]", "", text.lower()).strip()
     # Exact match
     if normalised in _HALLUCINATIONS:
@@ -348,7 +352,9 @@ class RecorderPipeline:
 
             # Publish SSE event
             if self.event_bus:
-                self.event_bus.publish("segment.created", {"audio_key": audio_key, "id": new_seg.id})
+                self.event_bus.publish(
+                    "segment.created", {"audio_key": audio_key, "id": new_seg.id}
+                )
 
         except Exception as exc:
             logger.error(

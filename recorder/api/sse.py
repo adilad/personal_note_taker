@@ -1,4 +1,5 @@
 """Server-Sent Events event bus (Phase 8)."""
+
 from __future__ import annotations
 
 import json

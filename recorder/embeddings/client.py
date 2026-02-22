@@ -1,4 +1,5 @@
 """Embedding generation — local sentence-transformers with graceful degradation."""
+
 from __future__ import annotations
 
 import logging

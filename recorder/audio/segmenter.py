@@ -1,4 +1,5 @@
 """VAD-based audio segmenter with live transcription."""
+
 from __future__ import annotations
 
 import datetime
@@ -81,12 +82,8 @@ def segmenter_loop(
             return
         last_live_transcribe = now
         try:
-            audio_np = (
-                np.frombuffer(buffer, dtype=np.int16).astype(np.float32) / 32768.0
-            )
-            segs, _ = asr_model.transcribe(
-                audio_np, beam_size=1, vad_filter=False, language="en"
-            )
+            audio_np = np.frombuffer(buffer, dtype=np.int16).astype(np.float32) / 32768.0
+            segs, _ = asr_model.transcribe(audio_np, beam_size=1, vad_filter=False, language="en")
             txt = " ".join(s.text.strip() for s in segs).strip()
             live_transcript_holder.set(txt)
         except Exception as exc:

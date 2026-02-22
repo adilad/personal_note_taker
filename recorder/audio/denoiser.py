@@ -1,4 +1,5 @@
 """Audio loading and noise reduction."""
+
 from __future__ import annotations
 
 import logging

@@ -1,4 +1,5 @@
 """Audio capture loop — wraps sounddevice RawInputStream."""
+
 from __future__ import annotations
 
 import logging
@@ -27,9 +28,7 @@ def record_loop(audio_q, stop_flag) -> None:
             blocksize=settings.frame_len,
             dtype="int16",
             channels=1,
-            callback=lambda indata, frames, ti, st: audio_callback(
-                audio_q, indata, frames, ti, st
-            ),
+            callback=lambda indata, frames, ti, st: audio_callback(audio_q, indata, frames, ti, st),
         ):
             while not stop_flag.is_set():
                 time.sleep(0.05)

@@ -1,4 +1,5 @@
 """One-time backfill — generates embeddings for existing segments that lack them."""
+
 from __future__ import annotations
 
 import logging
@@ -27,6 +28,8 @@ def backfill_embeddings(db) -> None:
             emb_repo.store(seg.id, emb)  # type: ignore[arg-type]
             done += 1
         if i % 50 == 0 and i > 0:
-            logger.info("backfill.progress", extra={"processed": i, "embedded": done, "total": len(missing)})
+            logger.info(
+                "backfill.progress", extra={"processed": i, "embedded": done, "total": len(missing)}
+            )
 
     logger.info("backfill.done", extra={"embedded": done, "skipped": len(missing) - done})
