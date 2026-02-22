@@ -11,6 +11,9 @@ from recorder.db.models import DailyDigest, FailedSegment, HourlyDigest, Segment
 
 logger = logging.getLogger(__name__)
 
+# Alias avoids mypy resolving 'list' to SegmentRepository.list in class scope
+_list = list
+
 
 def _pack_f32(v: list[float]) -> bytes:
     """Pack a float list into little-endian float32 bytes for sqlite-vec."""
@@ -56,7 +59,7 @@ class SegmentRepository:
         offset: int = 0,
         q: str | None = None,
         tag: str | None = None,
-    ) -> list[Segment]:
+    ) -> _list[Segment]:
         query = self.db.query(Segment).filter(Segment.deleted_at.is_(None))
 
         if start:
@@ -88,7 +91,7 @@ class SegmentRepository:
                         if tag:
                             base = base.filter(Segment.tags.like(f'%"{tag}"%'))
                         seg_map = {s.id: s for s in base.all()}  # type: ignore[misc]
-                        ordered = [seg_map[i] for i in ids_in_order if i in seg_map]
+                        ordered = [seg_map[i] for i in ids_in_order if i in seg_map]  # type: ignore[index]
                         return ordered[offset : offset + limit]
                     _used_semantic = True  # embedding worked but no results
             except Exception as exc:
@@ -122,7 +125,7 @@ class SegmentRepository:
 
         return query.order_by(Segment.start_ts.desc()).limit(limit).offset(offset).all()
 
-    def list_for_date(self, date_str: str) -> list[Segment]:
+    def list_for_date(self, date_str: str) -> _list[Segment]:
         start = f"{date_str}T00:00:00"
         end = f"{date_str}T23:59:59"
         return (
@@ -136,7 +139,7 @@ class SegmentRepository:
             .all()
         )
 
-    def list_for_hour(self, hour_start: datetime.datetime) -> list[Segment]:
+    def list_for_hour(self, hour_start: datetime.datetime) -> _list[Segment]:
         hour_end = hour_start + datetime.timedelta(hours=1)
         return (
             self.db.query(Segment)
@@ -149,7 +152,7 @@ class SegmentRepository:
             .all()
         )
 
-    def list_older_than(self, days: int) -> list[Segment]:
+    def list_older_than(self, days: int) -> _list[Segment]:
         cutoff = datetime.datetime.now() - datetime.timedelta(days=days)
         return (
             self.db.query(Segment)

@@ -44,6 +44,7 @@ def segmenter_loop(
             seg_start_ts = datetime.datetime.now()
             return
 
+        assert settings.audio_dir is not None  # always set by Settings._set_derived_paths
         ts_str = seg_start_ts.isoformat(timespec="seconds").replace(":", "-")
         wav_path = str(settings.audio_dir / f"seg_{ts_str}.wav")
         settings.audio_dir.mkdir(parents=True, exist_ok=True)

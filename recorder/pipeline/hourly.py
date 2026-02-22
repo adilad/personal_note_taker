@@ -64,7 +64,7 @@ def run_daily_digest(db, date_str: str) -> None:
     for s in segs:
         txt = (s.transcript or s.summary or "").strip()
         if txt:
-            ts = datetime.datetime.fromisoformat(s.start_ts).strftime("%I:%M %p")
+            ts = datetime.datetime.fromisoformat(s.start_ts).strftime("%I:%M %p")  # type: ignore[arg-type]
             texts.append(f"[{ts}] {txt}")
 
     combined = "\n\n".join(texts)
@@ -76,7 +76,7 @@ def run_daily_digest(db, date_str: str) -> None:
         if s.action_items:
             items = s.action_items if isinstance(s.action_items, list) else [s.action_items]
             all_actions.extend(items)
-    action_text = "\n".join(all_actions)
+    action_text = "\n".join(all_actions)  # type: ignore[arg-type]
 
     daily_repo.upsert(date_str, summary, action_text)
     logger.info("daily_digest.done", extra={"date": date_str})
@@ -89,8 +89,8 @@ def run_retention_cleanup(db) -> None:
     deleted = 0
     for seg in old_segs:
         key = seg.audio_key
-        if key and delete_segment(key):
-            seg_repo.soft_delete(seg.id)
+        if key and delete_segment(key):  # type: ignore[arg-type]
+            seg_repo.soft_delete(seg.id)  # type: ignore[arg-type]
             deleted += 1
     if deleted:
         logger.info("retention.cleanup", extra={"deleted": deleted})
