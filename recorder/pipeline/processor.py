@@ -10,14 +10,11 @@ Phase 5 features:
 """
 from __future__ import annotations
 
-import datetime
 import logging
 import queue
 import threading
 import time
 
-from recorder.audio.capture import record_loop
-from recorder.audio.segmenter import segmenter_loop
 from recorder.config import settings
 from recorder.db.repository import FailedSegmentRepository, SegmentRepository
 from recorder.db.session import SessionLocal
@@ -139,6 +136,9 @@ class RecorderPipeline:
             if self._running:
                 return False
             self.stop_flag.clear()
+
+            from recorder.audio.capture import record_loop
+            from recorder.audio.segmenter import segmenter_loop
 
             # Eagerly load Whisper model before threads start
             get_model()
@@ -337,12 +337,12 @@ class RecorderPipeline:
 
             # 7. Generate and store embedding for semantic search
             try:
-                from recorder.embeddings.client import generate_embedding
                 from recorder.db.repository import SegmentEmbeddingRepository
+                from recorder.embeddings.client import generate_embedding
 
                 embedding = generate_embedding(txt)
                 if embedding is not None:
-                    SegmentEmbeddingRepository(db).store(new_seg.id, embedding)
+                    SegmentEmbeddingRepository(db).store(new_seg.id, embedding)  # type: ignore[arg-type]
             except Exception as exc:
                 logger.debug("embeddings.store_error", extra={"error": str(exc)})
 

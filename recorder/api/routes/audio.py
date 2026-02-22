@@ -29,7 +29,7 @@ def stream_audio(segment_id: int):
             return jsonify({"ok": False, "error": "not found"}), 404
 
         # Try audio_key first, fall back to audio_path
-        key = seg.audio_key or ""
+        key = str(seg.audio_key or "")
         path = key_to_path(key) if key else None
 
         if path is None or not path.exists():

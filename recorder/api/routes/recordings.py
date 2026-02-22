@@ -5,7 +5,7 @@ import datetime
 import logging
 import os
 
-from flask import Blueprint, jsonify, current_app
+from flask import Blueprint, current_app, jsonify
 
 from recorder.api.middleware import inject_request_id, require_api_key
 from recorder.config import settings

@@ -96,7 +96,9 @@ def create_app(pipeline=None) -> Flask:
     @app.get("/api/segments")
     def legacy_segments():
         import datetime
+
         from flask import jsonify
+
         from recorder.db.repository import SegmentRepository
         from recorder.db.session import SessionLocal
         db = SessionLocal()
@@ -112,8 +114,10 @@ def create_app(pipeline=None) -> Flask:
 
     @app.get("/api/summary")
     def legacy_summary():
-        from flask import jsonify
         import datetime
+
+        from flask import jsonify
+
         from recorder.db.repository import SegmentRepository
         from recorder.db.session import SessionLocal
         from recorder.llm.client import summarize_daily
@@ -136,8 +140,11 @@ def create_app(pipeline=None) -> Flask:
 
     @app.post("/api/reprocess")
     def legacy_reprocess():
+        import datetime
+        import os
+
         from flask import jsonify
-        import datetime, os
+
         from recorder.config import settings
         from recorder.db.repository import SegmentRepository
         from recorder.db.session import SessionLocal

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 
 from recorder.config import settings
@@ -13,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 def _audio_root() -> Path:
     root = settings.audio_dir
+    assert root is not None  # always set by Settings._set_derived_paths
     root.mkdir(parents=True, exist_ok=True)
     return root
 

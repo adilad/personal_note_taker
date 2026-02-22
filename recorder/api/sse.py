@@ -5,7 +5,7 @@ import json
 import logging
 import queue
 import threading
-from typing import Generator
+from collections.abc import Generator
 
 logger = logging.getLogger(__name__)
 

@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Callable
 from functools import wraps
-from typing import Callable
 
 from flask import jsonify, request
 

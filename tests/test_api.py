@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock, patch
 
-
 # ---- Auth tests --------------------------------------------------------
 
 def test_health_no_auth(test_client):

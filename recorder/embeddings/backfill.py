@@ -14,7 +14,7 @@ def backfill_embeddings(db) -> None:
     emb_repo = SegmentEmbeddingRepository(db)
 
     all_segs = seg_repo.list(limit=10_000)
-    missing = [s for s in all_segs if not emb_repo.exists(s.id)]
+    missing = [s for s in all_segs if not emb_repo.exists(s.id)]  # type: ignore[arg-type]
 
     logger.info("backfill.start", extra={"total": len(missing)})
     done = 0
@@ -24,7 +24,7 @@ def backfill_embeddings(db) -> None:
             continue
         emb = generate_embedding(text)
         if emb is not None:
-            emb_repo.store(seg.id, emb)
+            emb_repo.store(seg.id, emb)  # type: ignore[arg-type]
             done += 1
         if i % 50 == 0 and i > 0:
             logger.info("backfill.progress", extra={"processed": i, "embedded": done, "total": len(missing)})

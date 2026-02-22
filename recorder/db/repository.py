@@ -1,10 +1,7 @@
 """Repository pattern — all SQL lives here, no raw SQL in routes or pipeline."""
-from __future__ import annotations
-
 import datetime
 import logging
 import struct
-from typing import Optional
 
 from sqlalchemy import or_, text
 from sqlalchemy.orm import Session
@@ -34,7 +31,7 @@ class SegmentRepository:
         logger.info("segment.created", extra={"segment_id": seg.id})
         return seg
 
-    def get_by_id(self, segment_id: int) -> Optional[Segment]:
+    def get_by_id(self, segment_id: int) -> Segment | None:
         return (
             self.db.query(Segment)
             .filter(Segment.id == segment_id, Segment.deleted_at.is_(None))
@@ -54,12 +51,12 @@ class SegmentRepository:
 
     def list(
         self,
-        start: Optional[str] = None,
-        end: Optional[str] = None,
+        start: str | None = None,
+        end: str | None = None,
         limit: int = 200,
         offset: int = 0,
-        q: Optional[str] = None,
-        tag: Optional[str] = None,
+        q: str | None = None,
+        tag: str | None = None,
     ) -> list[Segment]:
         query = self.db.query(Segment).filter(Segment.deleted_at.is_(None))
 
@@ -91,7 +88,7 @@ class SegmentRepository:
                             base = base.filter(Segment.start_ts < end)
                         if tag:
                             base = base.filter(Segment.tags.like(f'%"{tag}"%'))
-                        seg_map = {s.id: s for s in base.all()}
+                        seg_map = {s.id: s for s in base.all()}  # type: ignore[misc]
                         ordered = [seg_map[i] for i in ids_in_order if i in seg_map]
                         return ordered[offset : offset + limit]
                     _used_semantic = True  # embedding worked but no results
@@ -174,19 +171,19 @@ class SegmentRepository:
         seg = self.get_by_id(segment_id)
         if not seg:
             return False
-        seg.deleted_at = datetime.datetime.now()
+        seg.deleted_at = datetime.datetime.now()  # type: ignore[assignment]
         self.db.commit()
         logger.info("segment.soft_deleted", extra={"segment_id": segment_id})
         return True
 
-    def update(self, segment_id: int, **kwargs) -> Optional[Segment]:
+    def update(self, segment_id: int, **kwargs) -> Segment | None:
         seg = self.get_by_id(segment_id)
         if not seg:
             return None
         for key, val in kwargs.items():
             if hasattr(seg, key):
                 setattr(seg, key, val)
-        seg.updated_at = datetime.datetime.now()
+        seg.updated_at = datetime.datetime.now()  # type: ignore[assignment]
         self.db.commit()
         self.db.refresh(seg)
         return seg
@@ -248,7 +245,7 @@ class HourlyDigestRepository:
     def __init__(self, db: Session) -> None:
         self.db = db
 
-    def get_by_hour(self, hour_start: str) -> Optional[HourlyDigest]:
+    def get_by_hour(self, hour_start: str) -> HourlyDigest | None:
         return (
             self.db.query(HourlyDigest)
             .filter(HourlyDigest.hour_start == hour_start)
@@ -260,8 +257,8 @@ class HourlyDigestRepository:
     ) -> HourlyDigest:
         existing = self.get_by_hour(hour_start)
         if existing:
-            existing.hour_end = hour_end
-            existing.summary = summary
+            existing.hour_end = hour_end  # type: ignore[assignment]
+            existing.summary = summary  # type: ignore[assignment]
         else:
             existing = HourlyDigest(
                 hour_start=hour_start, hour_end=hour_end, summary=summary
@@ -284,7 +281,7 @@ class DailyDigestRepository:
     def __init__(self, db: Session) -> None:
         self.db = db
 
-    def get_by_date(self, date_str: str) -> Optional[DailyDigest]:
+    def get_by_date(self, date_str: str) -> DailyDigest | None:
         return (
             self.db.query(DailyDigest)
             .filter(DailyDigest.date == date_str)
@@ -296,9 +293,9 @@ class DailyDigestRepository:
     ) -> DailyDigest:
         existing = self.get_by_date(date_str)
         if existing:
-            existing.summary = summary
-            existing.action_items = action_items
-            existing.updated_at = datetime.datetime.now()
+            existing.summary = summary  # type: ignore[assignment]
+            existing.action_items = action_items  # type: ignore[assignment]
+            existing.updated_at = datetime.datetime.now()  # type: ignore[assignment]
         else:
             existing = DailyDigest(
                 date=date_str, summary=summary, action_items=action_items
@@ -335,6 +332,6 @@ class FailedSegmentRepository:
             .first()
         )
         if fs:
-            fs.attempts += 1
-            fs.updated_at = datetime.datetime.now()
+            fs.attempts += 1  # type: ignore[assignment]
+            fs.updated_at = datetime.datetime.now()  # type: ignore[assignment]
             self.db.commit()

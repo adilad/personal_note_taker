@@ -58,7 +58,10 @@ def test_analyze_parses_list_fields():
         "sentiment": "positive",
         "keywords": ["test", "meeting", "deadline"],
     })
-    with patch("recorder.llm.client._call_litellm", return_value=response):
+    with patch("recorder.llm.client.settings") as mock_settings, \
+         patch("recorder.llm.client._call_litellm", return_value=response):
+        mock_settings.use_litellm = True
+        mock_settings.model_max_tokens = 500
         from recorder.llm.client import analyze_transcript
 
         result = analyze_transcript("Alice and Bob met.")

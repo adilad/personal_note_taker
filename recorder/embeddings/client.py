@@ -14,8 +14,9 @@ def _get_model():
     global _model
     with _model_lock:
         if _model is None:
-            from recorder.config import settings
             from sentence_transformers import SentenceTransformer  # type: ignore
+
+            from recorder.config import settings
 
             logger.info("embeddings.loading_model", extra={"model": settings.embedding_model})
             _model = SentenceTransformer(settings.embedding_model)

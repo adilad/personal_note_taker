@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -17,9 +16,9 @@ class Settings(BaseSettings):
 
     # --- Paths ---
     app_dir: Path = Path(__file__).parent.parent
-    audio_dir: Optional[Path] = None
-    db_path: Optional[Path] = None
-    log_dir: Optional[Path] = None
+    audio_dir: Path | None = None
+    db_path: Path | None = None
+    log_dir: Path | None = None
 
     # --- LiteLLM (cloud LLM) ---
     litellm_api_key: str = ""
@@ -71,7 +70,7 @@ class Settings(BaseSettings):
     frame_ms: int = 30
 
     @model_validator(mode="after")
-    def _set_derived_paths(self) -> "Settings":
+    def _set_derived_paths(self) -> Settings:
         if self.audio_dir is None:
             self.audio_dir = self.app_dir / "audio"
         if self.db_path is None:

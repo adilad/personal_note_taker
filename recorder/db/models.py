@@ -1,7 +1,6 @@
 """SQLAlchemy ORM models."""
 from __future__ import annotations
 
-import datetime
 import json
 
 from sqlalchemy import (
@@ -59,12 +58,12 @@ class Segment(Base):
 
     def get_tags(self) -> list[str]:
         try:
-            return json.loads(self.tags or "[]")
+            return json.loads(self.tags or "[]")  # type: ignore[arg-type]
         except (json.JSONDecodeError, TypeError):
             return []
 
     def set_tags(self, tags: list[str]) -> None:
-        self.tags = json.dumps(tags)
+        self.tags = json.dumps(tags)  # type: ignore[assignment]
 
     def to_dict(self) -> dict:
         return {

@@ -1,11 +1,6 @@
 """Tests for config loading and env var overrides."""
 from __future__ import annotations
 
-import os
-from pathlib import Path
-
-import pytest
-
 
 def test_default_settings():
     from recorder.config import Settings

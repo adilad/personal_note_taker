@@ -3,9 +3,7 @@ from __future__ import annotations
 
 import os
 import struct
-import tempfile
 import wave
-from typing import Generator
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -70,7 +68,10 @@ def mock_llm():
     }
     import json
 
-    with patch("recorder.llm.client._call_litellm", return_value=json.dumps(deterministic_response)):
+    with patch("recorder.llm.client.settings") as mock_settings, \
+         patch("recorder.llm.client._call_litellm", return_value=json.dumps(deterministic_response)):
+        mock_settings.use_litellm = True
+        mock_settings.model_max_tokens = 500
         yield deterministic_response
 
 

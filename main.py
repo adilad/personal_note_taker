@@ -152,8 +152,8 @@ def main() -> None:
         return
 
     # Default: start recording immediately (headless mode)
-    from recorder.pipeline.processor import RecorderPipeline
     from recorder.api.sse import event_bus
+    from recorder.pipeline.processor import RecorderPipeline
 
     pipeline = RecorderPipeline()
     pipeline.event_bus = event_bus
