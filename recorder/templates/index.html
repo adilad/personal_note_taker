@@ -1,0 +1,583 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Voice Recorder</title>
+  <style>
+    :root {
+      --bg: #0a0a0a; --surface: #141414; --surface2: #1c1c1c;
+      --border: #262626; --text: #fafafa; --text2: #a1a1a1;
+      --accent: #3b82f6; --red: #ef4444; --green: #22c55e;
+    }
+    .light {
+      --bg: #ffffff; --surface: #f9fafb; --surface2: #f3f4f6;
+      --border: #e5e7eb; --text: #111827; --text2: #6b7280;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Inter', -apple-system, system-ui, sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; min-height: 100vh; transition: background 0.3s, color 0.3s; }
+    .app { max-width: 720px; margin: 0 auto; padding: 3rem 1.5rem; }
+    header { text-align: center; margin-bottom: 3rem; position: relative; }
+    h1 { font-size: 1.25rem; font-weight: 500; letter-spacing: -0.02em; color: var(--text2); }
+    .header-btns { position: absolute; top: 0; right: 0; display: flex; gap: 0.5rem; }
+    .icon-btn { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; width: 36px; height: 36px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 1rem; transition: all 0.2s; color: var(--text); }
+    .icon-btn:hover { border-color: var(--text2); }
+    .rec-btn { width: 80px; height: 80px; border-radius: 50%; border: 2px solid var(--border); background: var(--surface); cursor: pointer; margin: 2rem auto; display: flex; align-items: center; justify-content: center; transition: all 0.3s ease; }
+    .rec-btn:hover { border-color: var(--text2); transform: scale(1.05); }
+    .rec-btn.on { border-color: var(--red); background: rgba(239,68,68,0.1); }
+    .rec-btn .inner { width: 24px; height: 24px; border-radius: 50%; background: var(--text2); transition: all 0.3s ease; }
+    .rec-btn.on .inner { background: var(--red); border-radius: 4px; animation: pulse 1.5s infinite; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+    .status { text-align: center; font-size: 0.8rem; color: var(--text2); text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 2rem; }
+    .live { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1.25rem; margin-bottom: 2rem; display: none; }
+    .live.on { display: block; }
+    .live-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--red); margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; }
+    .live-label::before { content: ''; width: 6px; height: 6px; background: var(--red); border-radius: 50%; animation: pulse 1.5s infinite; }
+    .live-text { font-size: 0.95rem; color: var(--text); min-height: 1.5rem; }
+    .actions { display: flex; justify-content: center; gap: 0.5rem; margin-bottom: 3rem; flex-wrap: wrap; }
+    .btn { padding: 0.5rem 1rem; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text2); font-size: 0.8rem; cursor: pointer; transition: all 0.2s; text-decoration: none; display: inline-block; }
+    .btn:hover { border-color: var(--text2); color: var(--text); }
+    .section { margin-bottom: 2rem; }
+    .section-title { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text2); margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem; }
+    .copy-btn { background: none; border: none; cursor: pointer; font-size: 0.9rem; opacity: 0.6; padding: 0; color: var(--text2); }
+    .copy-btn:hover { opacity: 1; }
+    .search-row { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
+    .search { flex: 1; padding: 0.75rem 1rem; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); font-size: 0.9rem; }
+    .search:focus { outline: none; border-color: var(--accent); }
+    .search::placeholder { color: var(--text2); }
+    .segments { display: flex; flex-direction: column; gap: 0.5rem; }
+    .seg { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 1rem; cursor: pointer; transition: all 0.2s; }
+    .seg:hover { border-color: var(--text2); background: var(--surface2); }
+    .seg-time { font-size: 0.75rem; color: var(--text2); margin-bottom: 0.25rem; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+    .seg-text { font-size: 0.9rem; color: var(--text); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    .cat { background: var(--accent); color: white; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.65rem; text-transform: uppercase; }
+    .tag { background: var(--surface2); border: 1px solid var(--border); color: var(--text2); padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.65rem; cursor: pointer; }
+    .tag:hover { border-color: var(--accent); color: var(--accent); }
+    .empty { text-align: center; padding: 3rem; color: var(--text2); font-size: 0.9rem; }
+    .summary-box { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 1.25rem; font-size: 0.9rem; color: var(--text); white-space: pre-wrap; max-height: 300px; overflow-y: auto; }
+    /* Modal */
+    .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.8); backdrop-filter: blur(4px); z-index: 100; align-items: center; justify-content: center; padding: 1rem; }
+    .modal.on { display: flex; }
+    .modal-box { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; width: 100%; max-width: 540px; max-height: 85vh; overflow-y: auto; }
+    .modal-head { padding: 1.25rem; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; background: var(--surface); }
+    .modal-head h2 { font-size: 0.9rem; font-weight: 500; }
+    .modal-close { background: none; border: none; color: var(--text2); font-size: 1.25rem; cursor: pointer; padding: 0.25rem; }
+    .modal-close:hover { color: var(--text); }
+    .modal-body { padding: 1.25rem; }
+    .modal-body p { font-size: 0.8rem; color: var(--text2); margin-bottom: 0.5rem; }
+    .modal-body .content { background: var(--surface2); border-radius: 8px; padding: 1rem; font-size: 0.9rem; color: var(--text); margin-bottom: 1rem; white-space: pre-wrap; max-height: 200px; overflow-y: auto; }
+    .modal-body .label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text2); margin: 1rem 0 0.5rem; }
+    .keywords { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+    .kw { background: var(--surface2); border-radius: 4px; padding: 0.25rem 0.5rem; font-size: 0.75rem; color: var(--text2); }
+    .tag-input-row { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
+    .tag-input { flex: 1; padding: 0.4rem 0.75rem; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); font-size: 0.8rem; }
+    .tag-add-btn { padding: 0.4rem 0.75rem; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text2); font-size: 0.8rem; cursor: pointer; }
+    .tag-add-btn:hover { border-color: var(--accent); color: var(--accent); }
+    audio { width: 100%; border-radius: 8px; margin-top: 0.5rem; }
+    /* Date range section */
+    .range-row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; margin-bottom: 1rem; }
+    .date-input { padding: 0.6rem 0.75rem; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); font-size: 0.85rem; cursor: pointer; flex: 1; min-width: 120px; }
+    .date-input:focus { outline: none; border-color: var(--accent); }
+    .range-label { font-size: 0.75rem; color: var(--text2); white-space: nowrap; }
+    .range-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+    .range-summary-box { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 1.25rem; font-size: 0.9rem; color: var(--text); white-space: pre-wrap; max-height: 400px; overflow-y: auto; line-height: 1.7; }
+    .range-meta { font-size: 0.75rem; color: var(--text2); margin-bottom: 0.75rem; display: flex; gap: 1rem; flex-wrap: wrap; }
+    .range-actions-section { background: var(--surface2); border-radius: 8px; padding: 1rem; margin-top: 1rem; }
+    .range-actions-title { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text2); margin-bottom: 0.5rem; }
+    /* Key modal */
+    .key-modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.9); z-index: 200; align-items: center; justify-content: center; }
+    .key-modal.on { display: flex; }
+    .key-box { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 2rem; width: 100%; max-width: 400px; }
+    .key-box h2 { font-size: 1rem; margin-bottom: 0.5rem; }
+    .key-box p { font-size: 0.85rem; color: var(--text2); margin-bottom: 1.5rem; }
+    .key-input { width: 100%; padding: 0.75rem; border: 1px solid var(--border); border-radius: 8px; background: var(--surface2); color: var(--text); font-size: 0.9rem; font-family: monospace; margin-bottom: 1rem; }
+    .key-input:focus { outline: none; border-color: var(--accent); }
+    .key-submit { width: 100%; padding: 0.75rem; background: var(--accent); color: white; border: none; border-radius: 8px; font-size: 0.9rem; cursor: pointer; }
+    .key-submit:hover { opacity: 0.9; }
+    .collapsible { cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
+    .collapsible::after { content: '▼'; font-size: 0.7rem; transition: transform 0.2s; }
+    .collapsible.collapsed::after { transform: rotate(-90deg); }
+    .collapse-content { overflow: hidden; }
+    .collapse-content.collapsed { max-height: 0 !important; }
+  </style>
+</head>
+<body>
+  <!-- API Key Modal -->
+  <div class="key-modal" id="keyModal">
+    <div class="key-box">
+      <h2>API Key Required</h2>
+      <p>Enter your Recorder API key to access the interface. The key is stored locally in your browser.</p>
+      <input type="password" class="key-input" id="keyInput" placeholder="Your API key..." autocomplete="off">
+      <button class="key-submit" id="keySubmit">Save & Continue</button>
+    </div>
+  </div>
+
+  <div class="app">
+    <header>
+      <h1>Voice Recorder</h1>
+      <div class="header-btns">
+        <button class="icon-btn" id="themeBtn" title="Toggle theme">☀️</button>
+        <button class="icon-btn" id="keyBtn" title="Change API key">🔑</button>
+      </div>
+    </header>
+
+    <button class="rec-btn" id="recBtn"><div class="inner"></div></button>
+    <div class="status" id="status">Ready</div>
+
+    <div class="live" id="live">
+      <div class="live-label">Live</div>
+      <div class="live-text" id="liveText"></div>
+    </div>
+
+    <div class="actions">
+      <button class="btn" id="summaryBtn">Summary</button>
+      <a class="btn" id="exportJsonBtn" href="#">Export JSON</a>
+      <a class="btn" id="exportMdBtn" href="#">Export MD</a>
+      <a class="btn" id="exportCsvBtn" href="#">Export CSV</a>
+      <button class="btn" id="reprocessBtn">Reprocess</button>
+    </div>
+
+    <div class="section">
+      <div class="section-title collapsible collapsed" id="rangeToggle">Date Range Summary <button class="copy-btn" id="copyRange" title="Copy summary">📋</button></div>
+      <div class="collapse-content collapsed" id="rangeContent" style="max-height:9999px">
+        <div class="range-row">
+          <span class="range-label">From</span>
+          <input type="date" class="date-input" id="rangeStart">
+          <span class="range-label">To</span>
+          <input type="date" class="date-input" id="rangeEnd">
+        </div>
+        <div class="range-actions">
+          <button class="btn" id="rangeSummarizeBtn">Summarize</button>
+          <button class="btn" id="rangeExportJson">Export JSON</button>
+          <button class="btn" id="rangeExportMd">Export MD</button>
+          <button class="btn" id="rangeExportCsv">Export CSV</button>
+        </div>
+        <div id="rangeOutput" style="margin-top:1rem;display:none">
+          <div class="range-meta" id="rangeMeta"></div>
+          <div class="range-summary-box" id="rangeSummaryText"></div>
+          <div id="rangeActionsSection" style="display:none" class="range-actions-section">
+            <div class="range-actions-title">⚡ Action Items</div>
+            <div id="rangeActionItems" style="font-size:0.85rem;color:var(--text);white-space:pre-wrap;line-height:1.7"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title collapsible" id="segToggle">Recordings <span id="segCount"></span></div>
+      <div class="collapse-content" id="segContent" style="max-height:9999px">
+        <div class="search-row">
+          <input type="text" class="search" id="search" placeholder="Search transcripts (server-side)...">
+        </div>
+        <div class="segments" id="segments"><div class="empty">No recordings yet</div></div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title collapsible" id="sumToggle">Daily Summary <button class="copy-btn" id="copySummary" title="Copy">📋</button></div>
+      <div class="collapse-content" id="sumContent" style="max-height:9999px">
+        <div class="summary-box" id="summary">Click Summary to generate</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Segment Detail Modal -->
+  <div class="modal" id="modal">
+    <div class="modal-box">
+      <div class="modal-head">
+        <h2>Recording Details</h2>
+        <button class="modal-close" id="modalClose">&times;</button>
+      </div>
+      <div class="modal-body" id="modalBody"></div>
+    </div>
+  </div>
+
+<script>
+const sentimentEmoji = {positive:'😊',negative:'😟',neutral:'😐',mixed:'🤔',urgent:'🚨',frustrated:'😤',excited:'🎉',professional:'💼'};
+let segs = [], on = false, searchQuery = '', activeTag = '';
+let searchTimeout = null;
+const $ = id => document.getElementById(id);
+
+// --- API Key Management ---
+let apiKey = localStorage.getItem('recorder_api_key') || '';
+
+function headers() {
+  const h = {'Content-Type': 'application/json'};
+  if (apiKey) h['X-API-Key'] = apiKey;
+  return h;
+}
+
+function checkApiKey() {
+  if (!apiKey) {
+    $('keyModal').classList.add('on');
+  }
+}
+
+$('keySubmit').onclick = () => {
+  const val = $('keyInput').value.trim();
+  if (val) {
+    apiKey = val;
+    localStorage.setItem('recorder_api_key', val);
+    $('keyModal').classList.remove('on');
+    init();
+  }
+};
+$('keyInput').onkeydown = e => { if (e.key === 'Enter') $('keySubmit').click(); };
+$('keyBtn').onclick = () => {
+  $('keyInput').value = apiKey;
+  $('keyModal').classList.add('on');
+};
+
+// --- API helpers ---
+async function api(method, path, body) {
+  const opts = { method, headers: headers() };
+  if (body) opts.body = JSON.stringify(body);
+  const r = await fetch(path, opts);
+  if (r.status === 401) { $('keyModal').classList.add('on'); return null; }
+  return r.json();
+}
+
+// --- State sync ---
+async function syncStatus() {
+  const d = await api('GET', '/api/v1/recordings/status');
+  if (!d) return;
+  on = d.running;
+  $('recBtn').classList.toggle('on', on);
+  $('status').textContent = on ? 'Recording' : 'Ready';
+  if (!on) $('live').classList.remove('on');
+}
+
+async function load(q) {
+  let url = '/api/v1/segments?limit=200';
+  if (q) url += `&q=${encodeURIComponent(q)}`;
+  if (activeTag) url += `&tag=${encodeURIComponent(activeTag)}`;
+  const d = await api('GET', url);
+  if (!d) return;
+  segs = d.segments || [];
+  render();
+}
+
+function render() {
+  $('segCount').textContent = `(${segs.length})`;
+  if (!segs.length) {
+    $('segments').innerHTML = '<div class="empty">No recordings yet</div>';
+    return;
+  }
+  $('segments').innerHTML = segs.map(s => {
+    const tagHtml = (s.tags || []).map(t =>
+      `<span class="tag" onclick="filterByTag('${t}')">${t}</span>`
+    ).join('');
+    return `<div class="seg" data-id="${s.id}">
+      <div class="seg-time">
+        ${new Date(s.start_ts).toLocaleString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}
+        · ${(s.duration_sec||0).toFixed(0)}s
+        ${s.category ? `<span class="cat">${s.category}</span>` : ''}
+        ${s.sentiment ? sentimentEmoji[s.sentiment] || '' : ''}
+        ${tagHtml}
+      </div>
+      <div class="seg-text">${s.transcript||'...'}</div>
+    </div>`;
+  }).join('');
+}
+
+function filterByTag(tag) {
+  activeTag = activeTag === tag ? '' : tag;
+  load(searchQuery);
+}
+
+function show(id) {
+  const s = segs.find(x => x.id == id);
+  if (!s) return;
+  let html = `<p>${new Date(s.start_ts).toLocaleString()} · ${(s.duration_sec||0).toFixed(1)}s</p>`;
+
+  if (s.category || s.sentiment) {
+    html += `<div class="label">Analysis</div><div class="keywords">
+      ${s.category ? `<span class="kw">${s.category}</span>` : ''}
+      ${s.sentiment ? `<span class="kw">${sentimentEmoji[s.sentiment]||''} ${s.sentiment}</span>` : ''}
+    </div>`;
+  }
+  if (s.participants) {
+    html += `<div class="label">Participants</div><div class="keywords">
+      ${s.participants.split(',').map(p => `<span class="kw">${p.trim()}</span>`).join('')}
+    </div>`;
+  }
+  if (s.action_items) html += `<div class="label">⚡ Action Items</div><div class="content">${s.action_items}</div>`;
+  if (s.questions) html += `<div class="label">❓ Open Questions</div><div class="content">${s.questions}</div>`;
+  html += `<div class="label">Transcript</div><div class="content">${s.transcript||'(empty)'}</div>`;
+  if (s.speakers) html += `<div class="label">Speaker Attribution</div><div class="content">${s.speakers}</div>`;
+  html += `<div class="label">Summary</div><div class="content">${s.summary||'(none)'}</div>`;
+  if (s.keywords) {
+    html += `<div class="label">Keywords</div><div class="keywords">
+      ${s.keywords.split(',').map(k => `<span class="kw">${k.trim()}</span>`).join('')}
+    </div>`;
+  }
+
+  // Tags section with add/remove
+  const tags = s.tags || [];
+  html += `<div class="label">Tags</div>
+    <div class="keywords" id="tagList-${s.id}">
+      ${tags.map(t => `<span class="kw" style="cursor:pointer" onclick="removeTag(${s.id},'${t}')">${t} ×</span>`).join('')}
+    </div>
+    <div class="tag-input-row">
+      <input type="text" class="tag-input" id="newTag-${s.id}" placeholder="Add tag..." onkeydown="if(event.key==='Enter')addTag(${s.id})">
+      <button class="tag-add-btn" onclick="addTag(${s.id})">Add</button>
+    </div>`;
+
+  // Audio player
+  html += `<div class="label">Audio</div>
+    <audio controls src="/api/v1/segments/${s.id}/audio"></audio>`;
+
+  $('modalBody').innerHTML = html;
+  $('modal').classList.add('on');
+}
+
+async function addTag(id) {
+  const input = $(`newTag-${id}`);
+  const tag = input.value.trim();
+  if (!tag) return;
+  const s = segs.find(x => x.id == id);
+  if (!s) return;
+  const tags = [...(s.tags || []), tag];
+  const d = await api('PATCH', `/api/v1/segments/${id}`, {tags});
+  if (d && d.ok) {
+    s.tags = d.segment.tags;
+    input.value = '';
+    // Update tag list in modal
+    const tagList = $(`tagList-${id}`);
+    if (tagList) tagList.innerHTML = (s.tags||[]).map(t =>
+      `<span class="kw" style="cursor:pointer" onclick="removeTag(${id},'${t}')">${t} ×</span>`
+    ).join('');
+    render();
+  }
+}
+
+async function removeTag(id, tag) {
+  const s = segs.find(x => x.id == id);
+  if (!s) return;
+  const tags = (s.tags || []).filter(t => t !== tag);
+  const d = await api('PATCH', `/api/v1/segments/${id}`, {tags});
+  if (d && d.ok) {
+    s.tags = d.segment.tags;
+    const tagList = $(`tagList-${id}`);
+    if (tagList) tagList.innerHTML = (s.tags||[]).map(t =>
+      `<span class="kw" style="cursor:pointer" onclick="removeTag(${id},'${t}')">${t} ×</span>`
+    ).join('');
+    render();
+  }
+}
+
+// --- SSE (Phase 8) ---
+let es = null;
+let esRetryDelay = 1000;
+
+function connectSSE() {
+  if (es) es.close();
+  const url = apiKey ? `/api/v1/stream` : '/api/v1/stream';
+  // EventSource doesn't support custom headers natively; use ?key= for SSE
+  es = new EventSource(`/api/v1/stream${apiKey ? '?api_key='+encodeURIComponent(apiKey) : ''}`);
+
+  es.onopen = () => { esRetryDelay = 1000; };
+
+  es.addEventListener('segment.created', () => { load(searchQuery); });
+  es.addEventListener('segment.updated', e => {
+    const updated = JSON.parse(e.data);
+    const idx = segs.findIndex(s => s.id === updated.id);
+    if (idx >= 0) { segs[idx] = updated; render(); }
+    else load(searchQuery);
+  });
+  es.addEventListener('recording.started', () => { on = true; $('recBtn').classList.add('on'); $('status').textContent = 'Recording'; $('live').classList.add('on'); });
+  es.addEventListener('recording.stopped', () => { on = false; $('recBtn').classList.remove('on'); $('status').textContent = 'Ready'; $('live').classList.remove('on'); });
+  es.addEventListener('live_transcript', e => {
+    const d = JSON.parse(e.data);
+    if (on) { $('live').classList.add('on'); $('liveText').textContent = d.text || 'Listening...'; }
+  });
+
+  es.onerror = () => {
+    es.close();
+    setTimeout(connectSSE, Math.min(esRetryDelay, 30000));
+    esRetryDelay = Math.min(esRetryDelay * 2, 30000);
+  };
+}
+
+// --- Button handlers ---
+$('recBtn').onclick = async () => {
+  const d = await api('POST', on ? '/api/v1/recordings/stop' : '/api/v1/recordings/start');
+  if (d) syncStatus();
+};
+
+$('summaryBtn').onclick = async () => {
+  $('summary').textContent = 'Generating...';
+  $('sumContent').classList.remove('collapsed');
+  $('sumToggle').classList.remove('collapsed');
+  const d = await api('GET', '/api/v1/summaries/daily');
+  if (d) $('summary').textContent = d.summary || '(no data)';
+};
+
+function buildExportUrl(fmt) {
+  const url = `/api/v1/export?format=${fmt}`;
+  return apiKey ? url + `&api_key_header=skip` : url;
+}
+// Export links use fetch + download since we need to send the key header
+async function doExport(fmt, ext) {
+  const r = await fetch(`/api/v1/export?format=${fmt}`, {headers: headers()});
+  if (!r.ok) return;
+  const blob = await r.blob();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `recordings-${new Date().toISOString().slice(0,10)}.${ext}`;
+  a.click();
+}
+$('exportJsonBtn').onclick = e => { e.preventDefault(); doExport('json','json'); };
+$('exportMdBtn').onclick = e => { e.preventDefault(); doExport('markdown','md'); };
+$('exportCsvBtn').onclick = e => { e.preventDefault(); doExport('csv','csv'); };
+
+$('reprocessBtn').onclick = async () => {
+  $('reprocessBtn').textContent = 'Processing...';
+  const d = await api('POST', '/api/v1/recordings/reprocess');
+  $('reprocessBtn').textContent = `Reprocess (${d ? d.queued||0 : '?'} queued)`;
+  setTimeout(() => { $('reprocessBtn').textContent = 'Reprocess'; load(searchQuery); }, 3000);
+};
+
+// Debounced server-side search (300ms)
+$('search').oninput = e => {
+  clearTimeout(searchTimeout);
+  searchQuery = e.target.value;
+  searchTimeout = setTimeout(() => load(searchQuery), 300);
+};
+
+$('segments').onclick = e => {
+  const seg = e.target.closest('.seg');
+  if (seg && !e.target.classList.contains('tag')) show(seg.dataset.id);
+};
+$('modal').onclick = e => { if (e.target.id === 'modal') $('modal').classList.remove('on'); };
+$('modalClose').onclick = () => $('modal').classList.remove('on');
+
+// --- Date Range section ---
+(function() {
+  const today = new Date().toISOString().slice(0, 10);
+  $('rangeStart').value = today;
+  $('rangeEnd').value = today;
+})();
+
+$('rangeToggle').onclick = e => {
+  if (e.target.id === 'copyRange') return;
+  $('rangeToggle').classList.toggle('collapsed');
+  $('rangeContent').classList.toggle('collapsed');
+};
+
+$('copyRange').onclick = () => {
+  const txt = $('rangeSummaryText').textContent;
+  if (!txt) return;
+  navigator.clipboard.writeText(txt);
+  $('copyRange').textContent = '✓';
+  setTimeout(() => $('copyRange').textContent = '📋', 1500);
+};
+
+function getRangeDates() {
+  const start = $('rangeStart').value;
+  const end = $('rangeEnd').value;
+  if (!start || !end) { alert('Please select both start and end dates.'); return null; }
+  if (start > end) { alert('Start date must be before or equal to end date.'); return null; }
+  return { start, end };
+}
+
+$('rangeSummarizeBtn').onclick = async () => {
+  const dates = getRangeDates();
+  if (!dates) return;
+  const btn = $('rangeSummarizeBtn');
+  btn.textContent = 'Generating…';
+  btn.disabled = true;
+  $('rangeOutput').style.display = 'none';
+  try {
+    const d = await api('GET', `/api/v1/summaries/range?start=${dates.start}&end=${dates.end}`);
+    if (!d || !d.ok) {
+      alert(d?.error || 'Failed to generate summary.');
+      return;
+    }
+    $('rangeMeta').textContent = `${d.segment_count} recording${d.segment_count !== 1 ? 's' : ''} · ${dates.start} → ${dates.end}`;
+    $('rangeSummaryText').textContent = d.summary || '(no content)';
+    if (d.action_items && d.action_items.trim()) {
+      $('rangeActionItems').textContent = d.action_items;
+      $('rangeActionsSection').style.display = 'block';
+    } else {
+      $('rangeActionsSection').style.display = 'none';
+    }
+    $('rangeOutput').style.display = 'block';
+  } finally {
+    btn.textContent = 'Summarize';
+    btn.disabled = false;
+  }
+};
+
+async function doRangeExport(fmt, ext) {
+  const dates = getRangeDates();
+  if (!dates) return;
+  const r = await fetch(
+    `/api/v1/export?format=${fmt}&start=${dates.start}T00:00:00&end=${dates.end}T23:59:59`,
+    { headers: headers() }
+  );
+  if (!r.ok) { alert('Export failed.'); return; }
+  const blob = await r.blob();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `recordings-${dates.start}-to-${dates.end}.${ext}`;
+  a.click();
+}
+$('rangeExportJson').onclick = () => doRangeExport('json', 'json');
+$('rangeExportMd').onclick = () => doRangeExport('markdown', 'md');
+$('rangeExportCsv').onclick = () => doRangeExport('csv', 'csv');
+
+// Collapsible sections
+$('segToggle').onclick = () => { $('segToggle').classList.toggle('collapsed'); $('segContent').classList.toggle('collapsed'); };
+$('sumToggle').onclick = e => {
+  if (e.target.id === 'copySummary') return;
+  $('sumToggle').classList.toggle('collapsed');
+  $('sumContent').classList.toggle('collapsed');
+};
+$('copySummary').onclick = () => {
+  navigator.clipboard.writeText($('summary').textContent);
+  $('copySummary').textContent = '✓';
+  setTimeout(() => $('copySummary').textContent = '📋', 1500);
+};
+
+// Theme
+let dark = localStorage.getItem('theme') !== 'light';
+function setTheme() {
+  document.body.classList.toggle('light', !dark);
+  $('themeBtn').textContent = dark ? '☀️' : '🌙';
+  localStorage.setItem('theme', dark ? 'dark' : 'light');
+}
+setTheme();
+$('themeBtn').onclick = () => { dark = !dark; setTheme(); };
+
+function init() {
+  syncStatus();
+  load();
+  connectSSE();
+}
+
+// On startup: ask the server if auth is required before showing the modal.
+// If auth_required is false (no RECORDER_API_KEY set), skip the modal entirely.
+async function startup() {
+  try {
+    const r = await fetch('/api/v1/health');
+    const d = await r.json();
+    if (!d.auth_required) {
+      // Server is open — clear any stale key and proceed without auth
+      apiKey = '';
+      $('keyBtn').style.display = 'none';  // hide the key icon when no auth needed
+      init();
+      return;
+    }
+  } catch (e) {
+    // If health check fails, fall through to normal key check
+  }
+  // Auth is required — show modal if no key stored
+  checkApiKey();
+  if (apiKey) init();
+}
+
+startup();
+</script>
+</body>
+</html>
