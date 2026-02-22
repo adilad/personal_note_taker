@@ -228,16 +228,16 @@ def summarize_daily(text: str) -> str:
         for i, chunk in enumerate(chunks):
             logger.info("llm.chunk_summary", extra={"chunk": i + 1, "total": len(chunks)})
             times = re.findall(r"\[(\d{1,2}:\d{2} [AP]M)\]", chunk)
-            time_range = f"({times[0]} - {times[-1]})" if times else ""
+            time_range = f"({times[0]} – {times[-1]})" if times else ""
             summary = _call_litellm(
-                CHUNK_SUMMARY_PROMPT.format(text=chunk), max_tokens=1000
+                CHUNK_SUMMARY_PROMPT.format(text=chunk), max_tokens=400
             ) or _simple_summarize(chunk)
-            parts.append(f"### Part {i + 1} {time_range}\n{summary}")
-        return "## 📝 Daily Notes\n\n" + "\n\n---\n\n".join(parts)
+            parts.append(f"**{time_range}**\n{summary}" if time_range else summary)
+        return "\n\n".join(parts)
 
     prompt = DAILY_SUMMARY_PROMPT.format(text=text)
     if settings.use_litellm:
-        result = _call_litellm(prompt, max_tokens=8000)
+        result = _call_litellm(prompt, max_tokens=600)
         if result:
             return result
     if _get_local_llm():

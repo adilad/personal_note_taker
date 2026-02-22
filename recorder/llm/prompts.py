@@ -1,17 +1,17 @@
 """All prompt templates as module-level constants."""
 
 ANALYSIS_PROMPT = """\
-Analyze the following voice recording transcript and return a single JSON object.
+Analyze this voice recording transcript and return a single JSON object.
 
-Required fields:
-- "summary": 2-4 bullet points covering main topic, key points, decisions (string)
-- "speakers": Dialogue reformatted with speaker labels like [Name] or [Speaker 1] (string)
-- "participants": Names of people mentioned, as an array of strings
-- "category": One of: meeting, brainstorm, todo, personal, technical, casual, presentation, interview, other (string)
-- "action_items": Array of strings, each "[ ] Person: Task" format. Empty array if none.
-- "open_questions": Array of strings for unanswered questions needing follow-up. Empty array if none.
-- "sentiment": One of: positive, negative, neutral, mixed, urgent, frustrated, excited, professional (string)
-- "keywords": Array of up to 10 key terms (strings)
+Rules:
+- "summary": Main topic on the first line, then 2-3 short bullet points (•) covering key points or decisions. Max 4 lines total. No padding.
+- "speakers": Reformat as dialogue with labels [Name] or [Speaker 1]. Empty string if single speaker.
+- "participants": Names of people explicitly mentioned. Empty array if none.
+- "category": One of: meeting, brainstorm, todo, personal, technical, casual, presentation, interview, other
+- "action_items": Only concrete tasks with an owner. Format "[ ] Person: Task". Empty array if none.
+- "open_questions": Only questions that genuinely need follow-up. Empty array if none.
+- "sentiment": One of: positive, negative, neutral, mixed, urgent, frustrated, excited, professional
+- "keywords": Up to 5 key terms. Empty array if nothing substantive.
 
 Transcript:
 {transcript}
@@ -27,45 +27,35 @@ Diarized transcript (use to improve speaker labels):
 """
 
 DAILY_SUMMARY_PROMPT = """\
-Create comprehensive meeting notes from today's voice recordings. Include timestamps [HH:MM AM/PM] throughout.
+Summarize today's voice recordings. Be concise.
 
-Structure:
-## 📝 Detailed Notes (with timestamps)
-- [TIME] What was discussed
+Format (use exactly this structure, omit any section that has nothing to add):
 
-## 📊 Summary
-1-2 paragraph overview.
+**[Main topic of the day]**
+• Key point or event — include timestamp [H:MM AM/PM]
+• Key point or event — include timestamp
+• Key point or event — include timestamp
 
-## 🎯 Key Topics
-- Main subjects discussed
+**Action Items** (omit if none)
+• [TIME] Person: Task
 
-## ✅ Decisions Made
-- [TIME] Decision
+Do not add introductory sentences, do not pad, do not repeat yourself.
 
-## ⚡ Action Items
-- [TIME] Person: Task
-
-## ❓ Open Questions
-- Unanswered questions
-
----
 Recordings:
 {text}
 """
 
 CHUNK_SUMMARY_PROMPT = """\
-Summarize these timestamped recordings. KEEP the timestamps [HH:MM AM/PM] in your summary.
-
-Format: For each topic/discussion, include the time it occurred.
+Summarize these recordings as short bullet points. Keep timestamps [HH:MM AM/PM].
+One bullet per distinct topic. No filler.
 
 Recordings:
 {text}
 """
 
 HOURLY_SUMMARY_PROMPT = """\
-Summarize this transcript concisely in 2-4 bullet points.
-Focus on: main topic, key points, any action items or decisions.
-Be brief and direct.
+2-3 bullet points max. Main topic first, then key points or decisions.
+If nothing substantive happened, return a single bullet saying so.
 
 Transcript:
 {text}

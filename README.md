@@ -1,6 +1,6 @@
 # Audio Recorder
 
-An intelligent audio recording application with automatic transcription, AI analysis, and a modern web UI.
+An intelligent audio recording application with automatic transcription, AI analysis, semantic search, and a modern web UI.
 
 ## System Design
 
@@ -119,6 +119,11 @@ An intelligent audio recording application with automatic transcription, AI anal
            │                               │  7. SegmentRepository.create()         │
            │                               │     → INSERT segments + FTS5 trigger   │
            │                               │                                        │
+           │                               │  8. generate_embedding()               │
+           │                               │     all-MiniLM-L6-v2 (384-dim, local)  │
+           │                               │     → SegmentEmbeddingRepository.store()│
+           │                               │     → segment_embeddings BLOB table    │
+           │                               │                                        │
            │                               │  Retry:  3 attempts, 2^n s backoff     │
            │                               │  DLQ:    failed_segments after 3 fails │
            │                               └──────────────────┬────────────────────┘
@@ -142,12 +147,16 @@ An intelligent audio recording application with automatic transcription, AI anal
 │  │  auto-synced by triggers │  │  date · summary · action_items (daily) │   │
 │  │  MATCH queries           │  └────────────────────────────────────────┘   │
 │  └──────────────────────────┘  ┌────────────────────────────────────────┐   │
-│                                │  failed_segments (DLQ)                 │   │
-│                                │  audio_path · error · attempts         │   │
-│                                └────────────────────────────────────────┘   │
+│  ┌────────────────────────────┐ │  failed_segments (DLQ)                 │   │
+│  │  segment_embeddings        │ │  audio_path · error · attempts         │   │
+│  │  segment_id · embedding    │ └────────────────────────────────────────┘   │
+│  │  (float32 BLOB, 384-dim)   │                                              │
+│  │  NumPy cosine similarity   │                                              │
+│  └────────────────────────────┘                                              │
 │                                                                              │
 │  WAL mode · busy_timeout=30s · synchronous=NORMAL                           │
 │  Alembic migrations: 001_initial → 002_fts5 → 003_failed_segments           │
+│                      → 004_embeddings                                        │
 └──────────────────────────────────────────────────────────────────────────────┘
 
                               ┌──────────────────────────────┐
@@ -207,7 +216,7 @@ RecorderPipeline / API routes
 
 | Event | Published by | Trigger |
 |---|---|---|
-| `segment.created` | `processor.py` | After DB insert |
+| `segment.created` | `processor.py` | After DB insert + embedding stored |
 | `segment.updated` | `routes/segments.py` | After PATCH |
 | `recording.started` | `routes/recordings.py` | On `pipeline.start()` |
 | `recording.stopped` | `routes/recordings.py` | On `pipeline.stop()` |
@@ -227,7 +236,7 @@ main thread  (Flask WSGI)
 │                                      + live transcript every 2 s
 │
 ├── recorder-processor processor.py    proc_q → denoise → transcribe
-│                                      → diarize → LLM → DB → SSE
+│                                      → diarize → LLM → DB → embed → SSE
 │
 ├── recorder-hourly    hourly.py       sleep loop, fires every ~5 min
 │                                      hourly digest / daily / retention
@@ -263,8 +272,17 @@ Denoise  →  Transcribe  →  Diarize  →  LLM Analysis
     ▼  persist
 SQLite segments table  +  FTS5 index
     │
+    ▼  embed (async, ~50ms, local model)
+segment_embeddings BLOB table  (384-dim float32)
+    │
     ▼  fan-out
 SSE EventBus  →  Browser tabs
+
+Search query  ──►  generate_embedding(q)
+                       │ cosine similarity (NumPy, full scan)
+                       ▼
+                   top-k segment IDs  →  filter dates/tags  →  return
+                   falls back to FTS5 MATCH  →  LIKE if no embeddings
 ```
 
 ---
@@ -280,16 +298,24 @@ SSE EventBus  →  Browser tabs
 
 ### AI Intelligence
 - **Single LLM call per segment** — One structured JSON call produces summary, speakers, participants, category, action items, open questions, sentiment, and keywords simultaneously
+- **Concise summaries** — Summaries are capped to main topic + 2-3 bullets; no padding or introductory sentences
 - **Speaker Diarization** — Optional `pyannote.audio` integration for multi-speaker transcripts
 - **Keyword Extraction** — YAKE fallback when LLM keywords are absent
 - **Hourly Digests** — Automatic summaries every hour via background worker
 - **Daily Summaries** — On-demand or auto-generated at midnight; chunked for long transcripts
 - **Date-Range Summaries** — Summarise any span of days with export
 
+### Semantic Search
+- **Vector embeddings** — Every segment is embedded with `all-MiniLM-L6-v2` (384-dim, local, free, ~90MB)
+- **Semantic search** — `?q=budget discussion` finds "Q3 projections", "cut costs", "financial planning" — not just literal keyword matches
+- **NumPy cosine similarity** — Full linear scan over BLOB-stored float32 vectors; <10ms for thousands of segments, no external index required
+- **Graceful degradation** — Falls back to FTS5 full-text search if embeddings unavailable, then LIKE as last resort
+- **Backfill** — `--backfill-embeddings` embeds all existing segments in one pass
+
 ### Modern Web UI
 - **Real-time updates** — Server-Sent Events (SSE) replace polling; segments appear instantly
 - **Live transcript** — See in-progress speech in the status bar as you speak
-- **Segment browser** — Full-text search (FTS5), tag filtering, click to expand details
+- **Segment browser** — Semantic + full-text search, tag filtering, click to expand details
 - **Date-range summary panel** — Pick start/end dates, generate summary, export (JSON / Markdown / CSV)
 - **Audio playback** — In-browser `<audio>` player per segment
 - **Statistics** — Segment count, total duration, word count for today
@@ -321,8 +347,10 @@ python3 -m venv venv
 source venv/bin/activate
 
 pip install -e .
-# or with all optional extras:
-pip install -e ".[noise,keywords,diarization]"
+# with semantic search (recommended):
+pip install -e ".[embeddings]"
+# with all optional extras:
+pip install -e ".[embeddings,noise,keywords,diarization]"
 ```
 
 ### Configuration
@@ -340,25 +368,28 @@ Minimum required settings:
 RECORDER_API_KEY=your-secret-key-here
 
 # Whisper model size
-WHISPER_MODEL_SIZE=small          # tiny | base | small | medium | large-v2
+WHISPER_MODEL=small          # tiny | base | small | medium | large-v2
 
 # LLM for analysis (optional)
-USE_LITELLM=1
-LITELLM_MODEL=openai/gpt-4o-mini
-OPENAI_API_KEY=sk-...
+LITELLM_API_KEY=sk-...
+LITELLM_MODEL_ID=openai/gpt-4o-mini
+LITELLM_BASE_URL=https://api.openai.com
 ```
 
 ### Running
 
 ```bash
+# Run database migrations (first time or after upgrade)
+python main.py --migrate
+
+# Embed existing segments for semantic search (first time only)
+python main.py --backfill-embeddings
+
 # Web UI (recommended)
 python main.py --flask-ui
 
 # Headless recording (no UI, logs to console)
 python main.py
-
-# Run database migrations (first time or after upgrade)
-python main.py --migrate
 
 # Hourly digest worker only
 python main.py --only-hourly
@@ -377,16 +408,26 @@ All settings live in `recorder/config.py` and are read from environment variable
 | Variable | Default | Description |
 |---|---|---|
 | `RECORDER_API_KEY` | *(empty — no auth)* | Static API key for all endpoints |
-| `WHISPER_MODEL_SIZE` | `small` | Faster Whisper model size |
-| `VAD_AGGRESSIVENESS` | `2` | WebRTC VAD sensitivity 0–3 |
-| `OFF_TIME_SEC` | `2.0` | Silence duration (s) to close a segment |
-| `MAX_SEGMENT_SEC` | `60` | Maximum segment length (s) |
+| `WHISPER_MODEL` | `small` | Faster Whisper model size |
+| `WHISPER_BEAM_SIZE` | `5` | Beam search width for Whisper |
+| `VAD_AGGRESSIVENESS` | `1` | WebRTC VAD sensitivity 0–3 |
+| `OFF_TIME_SEC` | `3` | Silence duration (s) to close a segment |
+| `MAX_SEGMENT_SEC` | `120` | Maximum segment length (s) |
 | `SAMPLE_RATE` | `16000` | Audio sample rate (Hz) |
 | `FRAME_MS` | `30` | VAD frame size (10, 20, or 30 ms) |
-| `USE_LITELLM` | `0` | Enable LiteLLM for analysis and summaries |
-| `LITELLM_MODEL` | `openai/gpt-4o-mini` | LiteLLM model string |
-| `USE_DIARIZATION` | `0` | Enable pyannote speaker diarization |
+| `LITELLM_API_KEY` | *(empty)* | Enables LiteLLM for analysis/summaries when set |
+| `LITELLM_MODEL_ID` | `openai/gpt-4o-mini` | LiteLLM model string |
+| `LITELLM_BASE_URL` | `https://litellm.marqeta.com` | LiteLLM proxy base URL |
+| `LITELLM_TEMPERATURE` | `0.3` | LLM temperature |
+| `MODEL_MAX_TOKENS` | `500` | Max tokens for per-segment LLM analysis |
+| `USE_LITELLM_TRANSCRIPTION` | `false` | Use LiteLLM Whisper for transcription |
+| `LITELLM_TRANSCRIPTION_MODEL` | `whisper-1` | Model for cloud transcription |
+| `USE_EMBEDDINGS` | `true` | Enable semantic search via local embeddings |
+| `EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | sentence-transformers model name |
+| `EMBEDDING_DIM` | `384` | Embedding dimensions (must match model) |
+| `USE_DIARIZATION` | `false` | Enable pyannote speaker diarization |
 | `HF_TOKEN` | *(empty)* | HuggingFace token for pyannote |
+| `USE_NOISEREDUCE` | `true` | Enable noisereduce denoising |
 | `AUDIO_RETENTION_DAYS` | `90` | Days to keep audio files (0 = keep forever) |
 | `DB_PATH` | `journal.db` | SQLite database path |
 | `AUDIO_DIR` | `audio/` | Root directory for audio segments |
@@ -420,7 +461,9 @@ GET /api/v1/health
 GET /api/v1/segments
 ```
 
-Query params: `start` (ISO datetime), `end`, `limit` (default 100), `offset`, `q` (full-text search), `tag`
+Query params: `start` (ISO datetime), `end`, `limit` (default 100), `offset`, `q` (semantic + full-text search), `tag`
+
+The `q` parameter first attempts semantic cosine similarity search (requires `sentence-transformers`), falls back to FTS5 full-text, then LIKE.
 
 ```
 GET /api/v1/segments/<id>
@@ -519,6 +562,15 @@ Metrics: `recorder_segments_total`, `recorder_transcription_duration_seconds`, `
 | `created_at` | TEXT | |
 | `updated_at` | TEXT | |
 
+### segment_embeddings
+
+| Column | Type | Notes |
+|---|---|---|
+| `segment_id` | INTEGER PK | FK → segments(id) ON DELETE CASCADE |
+| `embedding` | BLOB | float32 little-endian, 384 values |
+
+Searched via NumPy cosine similarity (full linear scan, <10ms at scale).
+
 ### hourly_digests
 
 `id`, `hour_start`, `hour_end`, `summary`, `created_at`
@@ -533,7 +585,7 @@ Metrics: `recorder_segments_total`, `recorder_transcription_duration_seconds`, `
 
 ### segments_fts (FTS5 virtual table)
 
-Automatically synced to `segments` via triggers. Used for `?q=` full-text search.
+Automatically synced to `segments` via triggers. Used for `?q=` full-text search (fallback when embeddings unavailable).
 
 ---
 
@@ -554,13 +606,16 @@ recorder/
 │   │   └── cloud.py           # LiteLLM cloud transcription
 │   ├── llm/
 │   │   ├── client.py          # analyze_transcript(), summarize_daily()
-│   │   └── prompts.py         # Prompt templates
+│   │   └── prompts.py         # Prompt templates (concise, bullet-focused)
+│   ├── embeddings/
+│   │   ├── client.py          # generate_embedding() — all-MiniLM-L6-v2 singleton
+│   │   └── backfill.py        # One-time backfill for existing segments
 │   ├── pipeline/
 │   │   ├── processor.py       # RecorderPipeline class
 │   │   └── hourly.py          # Hourly/daily/retention worker
 │   ├── db/
 │   │   ├── models.py          # SQLAlchemy models
-│   │   ├── repository.py      # Repository pattern (all SQL here)
+│   │   ├── repository.py      # Repository pattern (all SQL + semantic search here)
 │   │   └── session.py         # Engine + SessionLocal
 │   ├── api/
 │   │   ├── app.py             # Flask app factory
@@ -582,7 +637,8 @@ recorder/
 │   └── versions/
 │       ├── 001_initial.py
 │       ├── 002_fts5.py
-│       └── 003_failed_segments.py
+│       ├── 003_failed_segments.py
+│       └── 004_embeddings.py  # segment_embeddings BLOB table
 ├── tests/
 │   ├── conftest.py
 │   ├── test_config.py
@@ -638,7 +694,15 @@ pytest tests/test_api.py -v     # single file
 - Verify default input device with `python -c "import sounddevice; print(sounddevice.query_devices())"`
 
 ### "Thank you." appearing on silence
-The hallucination filter handles this automatically. If you see it, ensure your `WHISPER_MODEL_SIZE` is at least `small` (tiny is more prone to hallucinations). The filter drops: segments under 2 s, transcripts under 3 words, and ~40 known Whisper phantom phrases.
+The hallucination filter handles this automatically. If you see it, ensure your `WHISPER_MODEL` is at least `small` (tiny is more prone to hallucinations). The filter drops: segments under 2 s, transcripts under 3 words, and ~40 known Whisper phantom phrases.
+
+### Semantic search not working
+Ensure `sentence-transformers` is installed:
+```bash
+pip install -e ".[embeddings]"
+python main.py --backfill-embeddings   # embed existing segments
+```
+To disable: set `USE_EMBEDDINGS=false` in `.env`. Search will fall back to FTS5.
 
 ### Database locked errors
 The app uses WAL mode. If errors persist:
@@ -649,19 +713,13 @@ rm journal.db-wal journal.db-shm
 ### Port already in use
 Set `RECORDER_UI_PORT=5001` (or any free port) in `.env`.
 
-### Upgrading from the old recorder.py
-Run the data migration to bring existing data into the new schema:
-```bash
-python main.py --migrate
-```
-The migration is idempotent — safe to run multiple times. Your existing `journal.db` and audio files are not deleted.
-
 ---
 
 ## Acknowledgments
 
 - [Faster Whisper](https://github.com/guillaumekln/faster-whisper) — Fast local ASR
 - [WebRTC VAD](https://github.com/wiseman/py-webrtcvad) — Voice activity detection
+- [sentence-transformers](https://www.sbert.net/) — Local semantic embeddings
 - [LiteLLM](https://github.com/BerriAI/litellm) — Unified LLM API
 - [SQLAlchemy](https://www.sqlalchemy.org/) — ORM
 - [Alembic](https://alembic.sqlalchemy.org/) — Database migrations

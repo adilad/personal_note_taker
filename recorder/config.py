@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     litellm_base_url: str = "https://litellm.marqeta.com"
     litellm_model_id: str = "openai/gpt-4o-mini"
     litellm_temperature: float = 0.3
-    model_max_tokens: int = 2000
+    model_max_tokens: int = 500
 
     # --- LiteLLM Transcription ---
     use_litellm_transcription: bool = False
