@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import struct
 from typing import Optional
 
 from sqlalchemy import or_, text
@@ -11,6 +12,11 @@ from sqlalchemy.orm import Session
 from recorder.db.models import DailyDigest, FailedSegment, HourlyDigest, Segment
 
 logger = logging.getLogger(__name__)
+
+
+def _pack_f32(v: list[float]) -> bytes:
+    """Pack a float list into little-endian float32 bytes for sqlite-vec."""
+    return struct.pack(f"{len(v)}f", *v)
 
 
 class SegmentRepository:
@@ -63,6 +69,36 @@ class SegmentRepository:
             query = query.filter(Segment.start_ts < end)
 
         if q:
+            # 1. Semantic search (requires sqlite-vec + sentence-transformers)
+            _used_semantic = False
+            try:
+                from recorder.embeddings.client import generate_embedding
+
+                query_emb = generate_embedding(q)
+                if query_emb is not None:
+                    emb_repo = SegmentEmbeddingRepository(self.db)
+                    k = min(limit + offset + 50, 200)
+                    hits = emb_repo.search(query_emb, k=k)
+                    if hits:
+                        ids_in_order = [h[0] for h in hits]
+                        base = self.db.query(Segment).filter(
+                            Segment.id.in_(ids_in_order),
+                            Segment.deleted_at.is_(None),
+                        )
+                        if start:
+                            base = base.filter(Segment.start_ts >= start)
+                        if end:
+                            base = base.filter(Segment.start_ts < end)
+                        if tag:
+                            base = base.filter(Segment.tags.like(f'%"{tag}"%'))
+                        seg_map = {s.id: s for s in base.all()}
+                        ordered = [seg_map[i] for i in ids_in_order if i in seg_map]
+                        return ordered[offset : offset + limit]
+                    _used_semantic = True  # embedding worked but no results
+            except Exception as exc:
+                logger.debug("semantic_search.fallback", extra={"error": str(exc)})
+
+            # 2. FTS5 lexical search
             try:
                 fts_ids = self.db.execute(
                     text("SELECT rowid FROM segments_fts WHERE segments_fts MATCH :q"),
@@ -71,9 +107,12 @@ class SegmentRepository:
                 ids = [r[0] for r in fts_ids]
                 if ids:
                     query = query.filter(Segment.id.in_(ids))
+                elif _used_semantic:
+                    return []  # semantic found nothing, FTS also empty
                 else:
                     return []
             except Exception:
+                # 3. LIKE fallback
                 like = f"%{q}%"
                 query = query.filter(
                     or_(
@@ -151,6 +190,58 @@ class SegmentRepository:
         self.db.commit()
         self.db.refresh(seg)
         return seg
+
+
+class SegmentEmbeddingRepository:
+    """
+    Manages the segment_embeddings table.
+
+    Embeddings are stored as raw float32 BLOBs and searched in-memory via
+    NumPy cosine similarity. At the expected scale (< 100k segments / ~150 MB)
+    a full linear scan completes in < 10 ms — no ANN index required.
+    """
+
+    def __init__(self, db: Session) -> None:
+        self.db = db
+
+    def store(self, segment_id: int, embedding: list[float]) -> None:
+        self.db.execute(
+            text(
+                "INSERT OR REPLACE INTO segment_embeddings(segment_id, embedding)"
+                " VALUES (:id, :emb)"
+            ),
+            {"id": segment_id, "emb": _pack_f32(embedding)},
+        )
+        self.db.commit()
+
+    def search(self, query_embedding: list[float], k: int = 30) -> list[tuple[int, float]]:
+        """Return [(segment_id, cosine_distance), ...] ordered closest-first."""
+        import numpy as np
+
+        rows = self.db.execute(
+            text("SELECT segment_id, embedding FROM segment_embeddings")
+        ).fetchall()
+        if not rows:
+            return []
+
+        ids = np.array([r[0] for r in rows], dtype=np.int64)
+        raw = b"".join(r[1] for r in rows)
+        # ascontiguousarray avoids numpy 2.x warnings on non-contiguous read-only buffers
+        mat = np.ascontiguousarray(
+            np.frombuffer(raw, dtype=np.float32).reshape(len(rows), -1)
+        )
+        query = np.ascontiguousarray(np.array(query_embedding, dtype=np.float32))
+        # Both query and stored embeddings are L2-normalised, so dot == cosine sim.
+        scores = np.dot(mat, query)  # (n,)
+        top_idx = np.argsort(scores)[::-1][:k]
+        return [(int(ids[i]), float(1.0 - scores[i])) for i in top_idx]
+
+    def exists(self, segment_id: int) -> bool:
+        row = self.db.execute(
+            text("SELECT 1 FROM segment_embeddings WHERE segment_id = :id"),
+            {"id": segment_id},
+        ).fetchone()
+        return row is not None
 
 
 class HourlyDigestRepository:

@@ -22,13 +22,13 @@ def test_transcribe_cloud_success(tmp_path, sample_wav):
     mock_response.status_code = 200
     mock_response.json.return_value = {"text": "Hello from cloud"}
 
+    # requests is imported lazily inside the function, so patch at the requests module level
     with patch("recorder.transcription.cloud.settings") as mock_s, \
-         patch("recorder.transcription.cloud.requests") as mock_requests:
+         patch("requests.post", return_value=mock_response):
         mock_s.use_litellm_transcription = True
         mock_s.litellm_api_key = "sk-test"
         mock_s.litellm_base_url = "https://api.test"
         mock_s.litellm_transcription_model = "whisper-1"
-        mock_requests.post.return_value = mock_response
 
         from recorder.transcription.cloud import transcribe_cloud
 
@@ -42,11 +42,11 @@ def test_transcribe_cloud_failure_returns_none(sample_wav):
     mock_response.status_code = 503
 
     with patch("recorder.transcription.cloud.settings") as mock_s, \
-         patch("recorder.transcription.cloud.requests") as mock_requests:
+         patch("requests.post", return_value=mock_response):
         mock_s.use_litellm_transcription = True
         mock_s.litellm_api_key = "sk-test"
         mock_s.litellm_base_url = "https://api.test"
-        mock_requests.post.return_value = mock_response
+        mock_s.litellm_transcription_model = "whisper-1"
 
         from recorder.transcription.cloud import transcribe_cloud
 

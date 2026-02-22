@@ -48,6 +48,11 @@ class Settings(BaseSettings):
     use_diarization: bool = False
     hf_token: str = ""
 
+    # --- Embeddings (semantic search) ---
+    use_embeddings: bool = True
+    embedding_model: str = "all-MiniLM-L6-v2"
+    embedding_dim: int = 384  # must match model output; changing requires re-creating segment_embeddings
+
     # --- Noise reduction ---
     use_noisereduce: bool = True
 

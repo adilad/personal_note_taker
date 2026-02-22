@@ -317,7 +317,7 @@ class RecorderPipeline:
                 keywords_str = ",".join(result.keywords)
 
             # 6. Persist
-            seg_repo.create(
+            new_seg = seg_repo.create(
                 start_ts=seg_start_ts_iso,
                 end_ts=seg_end_ts_iso,
                 duration_sec=duration,
@@ -335,10 +335,20 @@ class RecorderPipeline:
             )
             segments_total.inc()
 
+            # 7. Generate and store embedding for semantic search
+            try:
+                from recorder.embeddings.client import generate_embedding
+                from recorder.db.repository import SegmentEmbeddingRepository
+
+                embedding = generate_embedding(txt)
+                if embedding is not None:
+                    SegmentEmbeddingRepository(db).store(new_seg.id, embedding)
+            except Exception as exc:
+                logger.debug("embeddings.store_error", extra={"error": str(exc)})
+
             # Publish SSE event
             if self.event_bus:
-                seg = seg_repo.exists_by_audio_key(audio_key)  # re-fetch for id
-                self.event_bus.publish("segment.created", {"audio_key": audio_key})
+                self.event_bus.publish("segment.created", {"audio_key": audio_key, "id": new_seg.id})
 
         except Exception as exc:
             logger.error(

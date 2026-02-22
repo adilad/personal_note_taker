@@ -2,10 +2,11 @@
 Thin entrypoint — replaces the top-level recorder.py block.
 
 Usage:
-    python main.py                     # forever-listen mode (no UI)
-    python main.py --flask-ui          # Flask UI on http://127.0.0.1:5000
-    python main.py --only-hourly       # run only the hourly digest worker
-    python main.py --migrate           # run DB migrations then exit
+    python main.py                         # forever-listen mode (no UI)
+    python main.py --flask-ui              # Flask UI on http://127.0.0.1:5000
+    python main.py --only-hourly           # run only the hourly digest worker
+    python main.py --migrate               # run DB migrations then exit
+    python main.py --backfill-embeddings   # embed existing segments, then exit
 """
 from __future__ import annotations
 
@@ -79,12 +80,29 @@ def main() -> None:
         action="store_true",
         help="Run Alembic migrations and exit",
     )
+    parser.add_argument(
+        "--backfill-embeddings",
+        action="store_true",
+        help="Generate embeddings for all existing segments that lack them, then exit",
+    )
     args = parser.parse_args()
 
     _warn_if_no_api_key()
 
     if args.migrate:
         _run_migrations()
+        return
+
+    if args.backfill_embeddings:
+        from recorder.embeddings.backfill import backfill_embeddings
+        from recorder.db.session import SessionLocal
+
+        _ensure_schema()
+        db = SessionLocal()
+        try:
+            backfill_embeddings(db)
+        finally:
+            db.close()
         return
 
     # Ensure schema exists (fast path for first run)

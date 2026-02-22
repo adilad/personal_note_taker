@@ -37,6 +37,7 @@ noise = ["noisereduce>=3.0"]
 keywords = ["yake>=0.4"]
 diarization = ["pyannote-audio>=3.1"]
 local-llm = ["llama-cpp-python>=0.2"]
+embeddings = ["sentence-transformers>=3.0"]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
