@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install ruff
+      - run: ruff check recorder/ tests/ main.py
+      - run: ruff format --check recorder/ tests/ main.py
+
+  typecheck:
+    name: Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install mypy types-requests pydantic pydantic-settings sqlalchemy
+      - run: mypy recorder/ --ignore-missing-imports
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          pip install \
+            flask \
+            pydantic pydantic-settings python-dotenv \
+            sqlalchemy alembic \
+            requests \
+            numpy scipy \
+            pytest pytest-cov \
+            python-json-logger
+      - name: Run tests
+        run: |
+          pytest tests/ \
+            --cov=recorder \
+            --cov-report=term-missing \
+            --ignore=tests/test_transcription.py \
+            --ignore=tests/test_pipeline.py \
+            -v
+        env:
+          RECORDER_API_KEY: test-key-12345
