@@ -1,6 +1,7 @@
 # Audio Recorder
 
 An intelligent audio recording application with automatic transcription, AI analysis, semantic search, and a modern web UI.
+<img width="1105" height="1207" alt="image" src="https://github.com/user-attachments/assets/980e07e5-6c16-4ead-8d82-24c5e1c9fdc2" />
 
 ## System Design
 
