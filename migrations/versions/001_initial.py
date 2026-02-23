@@ -100,8 +100,13 @@ def upgrade() -> None:
         )
     else:
         existing_cols = {c["name"] for c in inspector.get_columns("daily_digests")}
-        if "action_items" not in existing_cols:
-            op.add_column("daily_digests", sa.Column("action_items", sa.Text))
+        for col_name, col_type in [
+            ("action_items", sa.Text),
+            ("created_at", sa.DateTime),
+            ("updated_at", sa.DateTime),
+        ]:
+            if col_name not in existing_cols:
+                op.add_column("daily_digests", sa.Column(col_name, col_type))
 
 
 def downgrade() -> None:
