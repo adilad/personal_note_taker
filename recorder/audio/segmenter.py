@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 import logging
 import queue
+import threading
 import time
 import wave
 
@@ -31,16 +32,19 @@ def segmenter_loop(
     frame_len = settings.frame_len
 
     buffer = b""
+    buffer_lock = threading.Lock()
     active = False
     last_voice_ts = time.time()
     seg_start_ts = datetime.datetime.now()
     seg_end_ts = seg_start_ts
-    last_live_transcribe: float = 0.0
 
     def flush_segment() -> None:
         nonlocal buffer, active, seg_start_ts, seg_end_ts
         live_transcript_holder.set("")
-        if not buffer:
+        with buffer_lock:
+            flush_buf = buffer
+            buffer = b""
+        if not flush_buf:
             seg_start_ts = datetime.datetime.now()
             return
 
@@ -53,9 +57,9 @@ def segmenter_loop(
             wf.setnchannels(1)
             wf.setsampwidth(2)
             wf.setframerate(settings.sample_rate)
-            wf.writeframes(buffer)
+            wf.writeframes(flush_buf)
 
-        duration = len(buffer) / 2 / settings.sample_rate
+        duration = len(flush_buf) / 2 / settings.sample_rate
         logger.info(
             "segment.saved",
             extra={"wav_path": wav_path, "duration_sec": round(duration, 2)},
@@ -70,25 +74,36 @@ def segmenter_loop(
         except queue.Full:
             logger.warning("proc_queue.full — dropping segment", extra={"wav_path": wav_path})
 
-        buffer = b""
         active = False
         seg_start_ts = datetime.datetime.now()
 
-    def do_live_transcribe() -> None:
-        nonlocal last_live_transcribe
-        if not buffer or len(buffer) < settings.sample_rate * 2:
-            return
-        now = time.time()
-        if now - last_live_transcribe < 2:
-            return
-        last_live_transcribe = now
-        try:
-            audio_np = np.frombuffer(buffer, dtype=np.int16).astype(np.float32) / 32768.0
-            segs, _ = asr_model.transcribe(audio_np, beam_size=1, vad_filter=False, language="en")
-            txt = " ".join(s.text.strip() for s in segs).strip()
-            live_transcript_holder.set(txt)
-        except Exception as exc:
-            logger.debug("live_transcribe.error", extra={"error": str(exc)})
+    def live_transcribe_worker() -> None:
+        """Background thread: transcribes the current buffer every 2s without blocking VAD."""
+        last_transcribed_at: float = 0.0
+        while not stop_flag.is_set():
+            time.sleep(0.5)
+            now = time.time()
+            if now - last_transcribed_at < 2.0:
+                continue
+            with buffer_lock:
+                buf_snapshot = buffer
+            if not buf_snapshot or len(buf_snapshot) < settings.sample_rate * 2:
+                continue
+            last_transcribed_at = now
+            try:
+                audio_np = np.frombuffer(buf_snapshot, dtype=np.int16).astype(np.float32) / 32768.0
+                segs, _ = asr_model.transcribe(
+                    audio_np, beam_size=1, vad_filter=False, language="en"
+                )
+                txt = " ".join(s.text.strip() for s in segs).strip()
+                live_transcript_holder.set(txt)
+            except Exception as exc:
+                logger.debug("live_transcribe.error", extra={"error": str(exc)})
+
+    live_thread = threading.Thread(
+        target=live_transcribe_worker, daemon=True, name="live-transcribe"
+    )
+    live_thread.start()
 
     logger.info("segmenter.started")
     while not stop_flag.is_set():
@@ -114,10 +129,8 @@ def segmenter_loop(
                     active = True
                     seg_end_ts = datetime.datetime.now()
                 if active:
-                    buffer += frame
-
-        if active:
-            do_live_transcribe()
+                    with buffer_lock:
+                        buffer += frame
 
         window_elapsed = (datetime.datetime.now() - seg_start_ts).total_seconds()
         if window_elapsed >= settings.max_segment_sec:
